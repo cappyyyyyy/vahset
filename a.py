@@ -4,18 +4,33 @@ import re
 import base64
 import json
 from datetime import datetime
+import requests
 
 app = Flask(__name__)
 
 # Render için güvenli ayarlar
 app.secret_key = os.environ.get('SECRET_KEY', 'vahset_render_2025_secure_key')
 app.config['SESSION_TYPE'] = 'filesystem'
-app.config['PERMANENT_SESSION_LIFETIME'] = 1800  # 30 dakika
+app.config['PERMANENT_SESSION_LIFETIME'] = 1800
 
 CORRECT_KEY = os.environ.get('ACCESS_KEY', 'vahset2025')
 
 # Global değişken
 users_data = {}
+
+# GitHub'dan veri çekmek için ayarlar
+GITHUB_RAW_URLS = [
+    "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part1.txt",
+    "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part2.txt",
+    "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part3.txt",
+    "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part4.txt",
+    "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part5.txt"
+]
+
+# GitHub bilgilerini ortam değişkenlerinden al
+GITHUB_USERNAME = os.environ.get('GITHUB_USERNAME', 'cappyyyyyy')
+GITHUB_REPO = os.environ.get('GITHUB_REPO', 'vahset')
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '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')
 
 class TerminalStyle:
     """Terminal stili sabitler"""
@@ -42,150 +57,147 @@ class TerminalStyle:
         'header': 'linear-gradient(90deg, #111111 0%, #222222 100%)'
     }
 
-def load_all_data():
-    """Verileri yükle - Render uyumlu"""
+def parse_line_data(line):
+    """Bir satır veriyi parse et"""
+    line = line.strip().rstrip(',')
+    if not line or not line.startswith('('):
+        return None
+    
+    if line.endswith('),'):
+        line = line[:-1]
+    
+    if line.startswith('(') and line.endswith(')'):
+        line = line[1:-1]
+        
+        # Değerleri ayır
+        values = []
+        current = ""
+        in_quotes = False
+        quote_char = None
+        in_brackets = 0
+        
+        for char in line:
+            if char in ("'", '"') and not in_quotes and in_brackets == 0:
+                in_quotes = True
+                quote_char = char
+                current += char
+            elif char == quote_char and in_quotes:
+                in_quotes = False
+                current += char
+            elif char == '[' and not in_quotes:
+                in_brackets += 1
+                current += char
+            elif char == ']' and not in_quotes:
+                in_brackets -= 1
+                current += char
+            elif char == ',' and not in_quotes and in_brackets == 0:
+                values.append(current.strip())
+                current = ""
+            else:
+                current += char
+        
+        if current:
+            values.append(current.strip())
+        
+        # Verileri çıkar
+        if len(values) >= 9:
+            user_id = values[0].strip().strip("'\"")
+            
+            # Email decode
+            email_encoded = values[1].strip().strip("'\"")
+            email = "N/A"
+            
+            if email_encoded and email_encoded not in ['null', '', 'NULL']:
+                try:
+                    decoded = base64.b64decode(email_encoded)
+                    email = decoded.decode('utf-8', errors='ignore')
+                except:
+                    email = email_encoded
+            
+            # IP adresi
+            ip = values[8].strip().strip("'\"") if len(values) > 8 else "N/A"
+            if ip in ['null', 'NULL']:
+                ip = "N/A"
+            
+            return {
+                'user_id': user_id,
+                'email': email,
+                'ip': ip,
+                'encoded': email_encoded
+            }
+    
+    return None
+
+def load_data_from_github():
+    """GitHub'dan veri çek"""
     global users_data
     
     print("=" * 70)
-    print("🚀 vahset ıd query v2.0 - MODERN TERMINAL STYLE")
+    print("🚀 vahset ıd query v2.0 - GITHUB DATA LOADER")
     print("=" * 70)
     
     all_users = {}
-    script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    print(f"📁 Script Directory: {script_dir}")
-    print(f"📁 Current Directory: {os.getcwd()}")
-    
-    # Dosya listesi
-    data_files = []
-    
-    # Önce data_part dosyalarını ara
-    for i in range(1, 6):
-        filename = f"data_part{i}.txt"
-        paths_to_check = [
-            os.path.join(script_dir, filename),
-            os.path.join(os.getcwd(), filename),
-            filename
-        ]
-        
-        for path in paths_to_check:
-            if os.path.exists(path):
-                data_files.append(path)
-                print(f"✅ Found: {filename} at {path}")
-                break
-        else:
-            print(f"⚠️  Not found: {filename}")
-    
-    # Alternatif dosyalar
-    if not data_files:
-        print("🔍 Searching for alternative data files...")
-        for file in os.listdir(script_dir):
-            if file.endswith('.txt') and 'data' in file.lower():
-                data_files.append(os.path.join(script_dir, file))
-                print(f"📄 Using: {file}")
-    
-    if not data_files:
-        print("❌ No data files found!")
+    # GitHub bilgileri kontrolü
+    if not GITHUB_USERNAME or not GITHUB_REPO:
+        print("⚠️  GitHub username veya repo bilgisi eksik!")
+        print("ℹ️  Ortam değişkenlerini ayarlayın: GITHUB_USERNAME, GITHUB_REPO")
         return {}
     
-    # Dosyaları oku
+    print(f"👤 GitHub User: {GITHUB_USERNAME}")
+    print(f"📦 Repository: {GITHUB_REPO}")
+    
     total_loaded = 0
     
-    for file_path in data_files:
-        filename = os.path.basename(file_path)
-        print(f"\n📖 Reading: {filename}")
+    # Her bir dosya için
+    for i in range(1, 6):
+        filename = f"data_part{i}.txt"
+        print(f"\n📖 GitHub'dan yükleniyor: {filename}")
+        
+        # GitHub raw URL'si
+        url = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{GITHUB_REPO}/main/{filename}"
         
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+            # GitHub'dan veri çek
+            headers = {}
+            if GITHUB_TOKEN:
+                headers['Authorization'] = f'token {GITHUB_TOKEN}'
             
-            lines = content.strip().split('\n')
-            print(f"   📊 Lines: {len(lines):,}")
+            response = requests.get(url, headers=headers, timeout=30)
             
-            file_count = 0
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
+            if response.status_code == 200:
+                content = response.text
+                lines = content.strip().split('\n')
+                print(f"   ✅ Yüklendi: {len(lines)} satır")
                 
-                # Satır formatını parse et
-                if line.startswith('(') and line.endswith('),'):
-                    line = line[:-1]
-                
-                if line.startswith('(') and line.endswith(')'):
-                    line = line[1:-1]
-                    
-                    # Değerleri ayır
-                    values = []
-                    current = ""
-                    in_quotes = False
-                    quote_char = None
-                    in_brackets = 0
-                    
-                    for char in line:
-                        if char in ("'", '"') and not in_quotes and in_brackets == 0:
-                            in_quotes = True
-                            quote_char = char
-                            current += char
-                        elif char == quote_char and in_quotes:
-                            in_quotes = False
-                            current += char
-                        elif char == '[' and not in_quotes:
-                            in_brackets += 1
-                            current += char
-                        elif char == ']' and not in_quotes:
-                            in_brackets -= 1
-                            current += char
-                        elif char == ',' and not in_quotes and in_brackets == 0:
-                            values.append(current.strip())
-                            current = ""
-                        else:
-                            current += char
-                    
-                    if current:
-                        values.append(current.strip())
-                    
-                    # Verileri çıkar
-                    if len(values) >= 9:
-                        user_id = values[0].strip().strip("'\"")
-                        
-                        # Email decode
-                        email_encoded = values[1].strip().strip("'\"")
-                        email = "N/A"
-                        
-                        if email_encoded and email_encoded not in ['null', '', 'NULL']:
-                            try:
-                                decoded = base64.b64decode(email_encoded)
-                                email = decoded.decode('utf-8', errors='ignore')
-                            except:
-                                email = email_encoded
-                        
-                        # IP adresi
-                        ip = values[8].strip().strip("'\"") if len(values) > 8 else "N/A"
-                        if ip in ['null', 'NULL']:
-                            ip = "N/A"
-                        
-                        # Kaydet
-                        all_users[user_id] = {
-                            'email': email,
-                            'ip': ip,
-                            'encoded': email_encoded
+                file_count = 0
+                for line in lines:
+                    data = parse_line_data(line)
+                    if data:
+                        all_users[data['user_id']] = {
+                            'email': data['email'],
+                            'ip': data['ip'],
+                            'encoded': data['encoded']
                         }
-                        
                         file_count += 1
                         total_loaded += 1
-            
-            print(f"   ✅ Loaded: {file_count:,} records")
-            
+                
+                print(f"   📊 Parse edildi: {file_count} kayıt")
+                
+            elif response.status_code == 404:
+                print(f"   ⚠️  Dosya bulunamadı: {filename}")
+            else:
+                print(f"   ❌ Hata: {response.status_code} - {response.reason}")
+                
+        except requests.exceptions.RequestException as e:
+            print(f"   ❌ Network hatası: {str(e)}")
         except Exception as e:
-            print(f"   ❌ Error: {str(e)}")
+            print(f"   ❌ Parse hatası: {str(e)}")
     
-    print(f"\n🎯 TOTAL LOADED: {len(all_users):,} users")
+    print(f"\n🎯 TOPLAM YÜKLENEN: {len(all_users):,} kullanıcı")
     
-    # Örnekler göster
     if all_users:
-        print("\n📊 SAMPLE RECORDS:")
+        print("\n📊 ÖRNEK KAYITLAR:")
         sample_ids = list(all_users.keys())[:3]
         for uid in sample_ids:
             data = all_users[uid]
@@ -194,13 +206,50 @@ def load_all_data():
             print(f"      🌐 IP: {data['ip']}")
             print()
     
+    # Local backup kontrolü (geliştirme için)
+    if not all_users:
+        print("\n🔄 GitHub'dan yüklenemedi, local dosyalar deneniyor...")
+        all_users = load_data_local()
+    
     users_data = all_users
+    return all_users
+
+def load_data_local():
+    """Local dosyalardan veri yükle (geliştirme için)"""
+    all_users = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    for i in range(1, 6):
+        filename = f"data_part{i}.txt"
+        filepath = os.path.join(script_dir, filename)
+        
+        if os.path.exists(filepath):
+            print(f"📄 Local dosya bulundu: {filename}")
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                lines = content.strip().split('\n')
+                print(f"   📊 {len(lines)} satır")
+                
+                for line in lines:
+                    data = parse_line_data(line)
+                    if data:
+                        all_users[data['user_id']] = {
+                            'email': data['email'],
+                            'ip': data['ip'],
+                            'encoded': data['encoded']
+                        }
+                
+            except Exception as e:
+                print(f"   ❌ Local dosya hatası: {str(e)}")
+    
     return all_users
 
 # Verileri uygulama başladığında yükle
 with app.app_context():
-    print("📦 Loading data on startup...")
-    users_data = load_all_data()
+    print("📦 GitHub'dan veriler yükleniyor...")
+    users_data = load_data_from_github()
 
 @app.before_request
 def before_request():
@@ -545,10 +594,10 @@ def login():
                 </form>
                 
                 <div class="terminal-footer">
-                    <div>v2.0 | Modern Terminal Interface</div>
+                    <div>v2.0 | GitHub Data Source</div>
                     <div class="powered-by">
-                        <i class="fas fa-code"></i>
-                        <span>Powered by Flask & Render</span>
+                        <i class="fab fa-github"></i>
+                        <span>Powered by GitHub API</span>
                     </div>
                 </div>
             </div>
@@ -610,20 +659,6 @@ def login():
                     button.disabled = false;
                     alert('Network error. Please try again.');
                 }
-            });
-            
-            // Add some terminal-like effects
-            document.addEventListener('DOMContentLoaded', function() {
-                const inputs = document.querySelectorAll('.access-input');
-                inputs.forEach(input => {
-                    input.addEventListener('focus', function() {
-                        this.parentElement.style.transform = 'scale(1.02)';
-                    });
-                    
-                    input.addEventListener('blur', function() {
-                        this.parentElement.style.transform = 'scale(1)';
-                    });
-                });
             });
         </script>
     </body>
@@ -1169,8 +1204,8 @@ def terminal():
                 
                 <div class="header-right">
                     <div class="user-info">
-                        <i class="fas fa-user-shield"></i>
-                        ADMIN ACCESS
+                        <i class="fab fa-github"></i>
+                        GitHub Data Source
                     </div>
                     <a href="/logout" class="logout-btn">
                         <i class="fas fa-sign-out-alt"></i>
@@ -1321,9 +1356,9 @@ def terminal():
             
             <!-- Footer -->
             <footer class="terminal-footer">
-                <div>VAHSET ID QUERY v2.0 | Modern Terminal Interface</div>
+                <div>VAHSET ID QUERY v2.0 | GitHub Data Source</div>
                 <div class="footer-links">
-                    <a href="#" class="footer-link"><i class="fas fa-shield-alt"></i> Secure</a>
+                    <a href="#" class="footer-link"><i class="fab fa-github"></i> GitHub</a>
                     <a href="#" class="footer-link"><i class="fas fa-bolt"></i> Fast</a>
                     <a href="#" class="footer-link"><i class="fas fa-database"></i> Reliable</a>
                 </div>
@@ -1345,74 +1380,6 @@ def terminal():
             
             setInterval(updateTime, 1000);
             updateTime();
-            
-            // Terminal effects
-            document.addEventListener('DOMContentLoaded', function() {
-                // Input focus effect
-                const inputs = document.querySelectorAll('.terminal-input');
-                inputs.forEach(input => {
-                    input.addEventListener('focus', function() {
-                        this.parentElement.style.transform = 'scale(1.02)';
-                    });
-                    
-                    input.addEventListener('blur', function() {
-                        this.parentElement.style.transform = 'scale(1)';
-                    });
-                });
-                
-                // Sample ID click effect
-                const idChips = document.querySelectorAll('.id-chip, .similar-id');
-                idChips.forEach(chip => {
-                    chip.addEventListener('click', function() {
-                        this.style.animation = 'none';
-                        setTimeout(() => {
-                            this.style.animation = 'fadeIn 0.3s ease';
-                        }, 10);
-                    });
-                });
-                
-                // Form submission
-                const form = document.querySelector('form');
-                if (form) {
-                    form.addEventListener('submit', function() {
-                        const button = this.querySelector('.search-btn');
-                        const originalHTML = button.innerHTML;
-                        
-                        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SEARCHING...';
-                        button.disabled = true;
-                        
-                        setTimeout(() => {
-                            button.innerHTML = originalHTML;
-                            button.disabled = false;
-                        }, 2000);
-                    });
-                }
-                
-                // Terminal typing effect for placeholder
-                const input = document.querySelector('.terminal-input');
-                if (input && !input.value) {
-                    const placeholder = input.getAttribute('placeholder');
-                    let i = 0;
-                    
-                    function typeWriter() {
-                        if (i < placeholder.length) {
-                            input.setAttribute('placeholder', placeholder.substring(0, i + 1));
-                            i++;
-                            setTimeout(typeWriter, 50);
-                        }
-                    }
-                    
-                    setTimeout(typeWriter, 1000);
-                }
-            });
-            
-            // Auto-focus input on page load
-            window.onload = function() {
-                const input = document.querySelector('.terminal-input');
-                if (input) {
-                    input.focus();
-                }
-            };
         </script>
     </body>
     </html>
@@ -1456,12 +1423,13 @@ def intcomma_filter(value):
 # Render için gerekli
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    # Render'da debug mode kapalı olmalı
     debug = os.environ.get('FLASK_ENV') == 'development'
     print(f"\n{'='*70}")
-    print("🚀 VAHSET ID QUERY v2.0 - MODERN TERMINAL INTERFACE")
+    print("🚀 VAHSET ID QUERY v2.0 - GITHUB DATA SOURCE")
     print(f"🔧 Port: {port}")
     print(f"🔧 Debug: {debug}")
+    print(f"👤 GitHub User: {GITHUB_USERNAME}")
+    print(f"📦 Repository: {GITHUB_REPO}")
     print(f"📊 Loaded {len(users_data):,} users")
     print(f"{'='*70}\n")
     app.run(host='0.0.0.0', port=port, debug=debug)
