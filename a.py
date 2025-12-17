@@ -159,8 +159,18 @@ def load_data_from_github():
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part2.txt", 
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part3.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part4.txt",
-        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part5.txt"
-    ]
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part5.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part6.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part7.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part8.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part9.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part10.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part11.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part12.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part13.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part14.txt",
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part15.txt"       
+        ]
     
     total_loaded = 0
     
