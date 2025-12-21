@@ -56,7 +56,6 @@ class User(db.Model, UserMixin):
     posts = db.relationship('Post', backref='author', lazy=True)
     messages_sent = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender', lazy=True)
     messages_received = db.relationship('Message', foreign_keys='Message.receiver_id', backref='receiver', lazy=True)
-    is_admin = db.Column(db.Boolean, default=False)
     is_banned = db.Column(db.Boolean, default=False)
 class Post(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -114,6 +113,29 @@ GITHUB_REPO = os.environ.get('GITHUB_REPO', 'vahset')
 # Initialize database
 with app.app_context():
     db.create_all()
+
+    # Admin kullanıcısını username veya email ile kontrol et
+    existing_admin = User.query.filter(
+        (User.username == 'cappyruhh') | 
+        (User.email == 'admin@vahset.com')
+    ).first()
+
+    if not existing_admin:
+        admin_user = User(
+            username='cappyruhh',                    # ← Admin kullanıcı adı artık cappyruhh
+            email='admin@vahset.com',                # İstersen bunu da değiştirebilirsin
+            password_hash=generate_password_hash('You9090.'),  # Senin belirlediğin şifre
+            is_admin=True,
+            is_banned=False
+        )
+        db.session.add(admin_user)
+        db.session.commit()
+        print("✅ Yeni admin kullanıcısı oluşturuldu!")
+        print("   Kullanıcı adı: cappyruhh")
+        print("   Şifre       : You9090.")
+        print("   Email       : admin@vahset.com")
+    else:
+        print("ℹ️ Admin kullanıcısı (cappyruhh) zaten mevcut, yeni oluşturulmadı.")
 
 # OSINT Functions (kısaltılmış)
 def parse_line_data(line):
@@ -191,7 +213,7 @@ def load_data_from_github():
     all_users = {}
     
     # Sadece 2 dosya yükle (test için)
-    github_files = [
+    github_files = [  
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part1.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part2.txt", 
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part3.txt",
@@ -207,6 +229,7 @@ def load_data_from_github():
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part13.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part14.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part15.txt" 
+    
     ]
     
     total_loaded = 0
@@ -1789,17 +1812,17 @@ def forum_home():
     online_users = get_online_users()
     active_posts = get_active_posts()
     active_users = get_active_users()
-    
+
     try:
         posts = Post.query.order_by(desc(Post.timestamp)).limit(10).all()
     except:
         posts = []
-    
+
     categories = ['General', 'OSINT', 'Security', 'Programming', 'Off Topic']
-    
+
     return render_template_string('''
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1815,282 +1838,185 @@ def forum_home():
             --accent-cyan: #58a6ff;
             --accent-purple: #bc8cff;
             --accent-red: #ff3333;
-            --accent-yellow: #ffcc00;
             --text-primary: #f0f6fc;
             --text-secondary: #8b949e;
             --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
             --gradient-purple: linear-gradient(90deg, #bc8cff 0%, #ff66cc 100%);
             --gradient-header: linear-gradient(90deg, #0d1117 0%, #161b22 100%);
         }
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
             font-family: 'JetBrains Mono', monospace;
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
         }
-        
+
         .matrix-grid {
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: 
+            top: 0; left: 0; width: 100%; height: 100%;
+            background:
                 linear-gradient(rgba(0, 255, 0, 0.03) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(0, 255, 0, 0.03) 1px, transparent 1px);
             background-size: 20px 20px;
-            z-index: -1;
-            opacity: 0.3;
+            z-index: -1; opacity: 0.3;
         }
-        
-        .forum-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        /* Header */
+
+        .forum-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
         .forum-header {
             background: var(--gradient-header);
             border: 1px solid rgba(0, 255, 0, 0.3);
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 20px;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             backdrop-filter: blur(10px);
         }
-        
-        .logo-area {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .logo-icon {
-            font-size: 2.5em;
-            color: var(--accent-green);
-        }
-        
+
+        .logo-area { display: flex; align-items: center; gap: 15px; }
+        .logo-icon { font-size: 2.8em; color: var(--accent-green); }
         .logo-text h1 {
             background: var(--gradient-matrix);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            font-size: 1.8em;
+            font-size: 2em;
+            font-weight: 700;
         }
-        
-        .logo-text p {
-            color: var(--text-secondary);
-            font-size: 0.9em;
-        }
-        
-        .stats-area {
-            display: flex;
-            gap: 20px;
-            text-align: center;
-        }
-        
+        .logo-text p { color: var(--text-secondary); font-size: 0.9em; margin-top: 4px; }
+
+        .stats-area { display: flex; gap: 25px; }
         .stat-box {
-            padding: 10px 20px;
             background: rgba(0, 255, 0, 0.1);
-            border-radius: 8px;
-            border: 1px solid rgba(0, 255, 0, 0.3);
+            border: 1px solid rgba(0, 255, 0, 0.4);
+            border-radius: 10px;
+            padding: 12px 20px;
+            text-align: center;
+            min-width: 100px;
         }
-        
-        .stat-number {
-            font-size: 1.5em;
-            font-weight: bold;
-            color: var(--accent-green);
-        }
-        
-        .stat-label {
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            margin-top: 5px;
-        }
-        
-        .nav-buttons {
-            display: flex;
-            gap: 10px;
-        }
-        
+        .stat-number { font-size: 1.8em; font-weight: bold; color: var(--accent-green); }
+        .stat-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 5px; text-transform: uppercase; letter-spacing: 1px; }
+
+        .nav-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
         .nav-btn {
             padding: 10px 20px;
-            border-radius: 6px;
+            border-radius: 8px;
             text-decoration: none;
-            font-weight: 500;
-            transition: all 0.3s;
+            font-weight: 600;
+            font-size: 0.95em;
+            transition: all 0.3s ease;
             display: flex;
             align-items: center;
             gap: 8px;
         }
-        
-        .btn-primary {
-            background: var(--gradient-matrix);
-            color: #000;
-        }
-        
-        .btn-secondary {
-            background: rgba(88, 166, 255, 0.1);
-            color: var(--accent-cyan);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-        }
-        
-        .btn-purple {
-            background: var(--gradient-purple);
-            color: #000;
-        }
-        
-        .btn-danger {
-            background: rgba(255, 51, 51, 0.1);
-            color: var(--accent-red);
-            border: 1px solid rgba(255, 51, 51, 0.3);
-        }
-        
-        .nav-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.2);
-        }
-        
-        /* Main Content */
-        .forum-main {
-            display: grid;
-            grid-template-columns: 250px 1fr;
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        @media (max-width: 768px) {
-            .forum-main {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        /* Sidebar */
+        .btn-primary { background: var(--gradient-matrix); color: #000; }
+        .btn-secondary { background: rgba(88, 166, 255, 0.15); color: var(--accent-cyan); border: 1px solid rgba(88, 166, 255, 0.4); }
+        .btn-purple { background: var(--gradient-purple); color: #000; }
+        .btn-danger { background: rgba(255, 51, 51, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }
+        .nav-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0, 255, 0, 0.3); }
+
+        .forum-main { display: grid; grid-template-columns: 280px 1fr; gap: 25px; }
+
         .sidebar {
-            background: rgba(22, 27, 34, 0.9);
+            background: var(--bg-secondary);
             border: 1px solid rgba(88, 166, 255, 0.2);
-            border-radius: 10px;
-            padding: 20px;
-            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 25px;
+            height: fit-content;
         }
-        
-        .sidebar-section {
-            margin-bottom: 25px;
-        }
-        
+        .sidebar-section { margin-bottom: 30px; }
         .section-title {
             color: var(--accent-cyan);
-            font-size: 0.9em;
+            font-size: 1em;
+            font-weight: 600;
             margin-bottom: 15px;
             padding-bottom: 10px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
-        
-        .category-list {
-            list-style: none;
-        }
-        
+        .category-list { list-style: none; }
         .category-item {
-            padding: 10px;
-            margin-bottom: 5px;
-            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            background: rgba(0, 255, 0, 0.05);
             transition: all 0.3s;
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        
-        .category-item:hover {
-            background: rgba(0, 255, 0, 0.1);
-            transform: translateX(5px);
-        }
-        
-        /* Posts Section */
+        .category-item:hover { background: rgba(0, 255, 0, 0.15); transform: translateX(8px); }
+
         .posts-container {
-            background: rgba(22, 27, 34, 0.9);
+            background: var(--bg-secondary);
             border: 1px solid rgba(88, 166, 255, 0.2);
-            border-radius: 10px;
-            padding: 25px;
-            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 30px;
         }
-        
         .posts-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 25px;
+            margin-bottom: 30px;
             padding-bottom: 15px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
-        
+        .posts-header h2 { font-size: 1.4em; display: flex; align-items: center; gap: 10px; }
+
         .create-post-btn {
             background: var(--gradient-matrix);
             color: #000;
             border: none;
-            padding: 10px 20px;
-            border-radius: 6px;
+            padding: 12px 25px;
+            border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s;
-        }
-        
-        .create-post-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.3);
-        }
-        
-        .posts-list {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-        
-        .post-card {
-            background: rgba(10, 10, 10, 0.8);
-            border: 1px solid rgba(0, 255, 0, 0.2);
-            border-radius: 10px;
-            padding: 20px;
-            transition: all 0.3s;
-        }
-        
-        .post-card:hover {
-            border-color: var(--accent-green);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.1);
-            transform: translateY(-2px);
-        }
-        
-        .post-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .post-author {
+            font-size: 1em;
             display: flex;
             align-items: center;
             gap: 10px;
+            transition: all 0.3s;
         }
-        
-        .author-avatar {
+        .create-post-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0, 255, 0, 0.4); }
+
+        /* POST LIST STYLES */
+        .post-list {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .post-card {
+            background: var(--bg-card);
+            border: 1px solid rgba(88, 166, 255, 0.1);
+            border-radius: 10px;
+            padding: 25px;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .post-card:hover {
+            border-color: rgba(0, 255, 0, 0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(0, 255, 0, 0.1);
+        }
+
+        .post-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            gap: 15px;
+        }
+
+        .post-author-avatar {
             width: 40px;
             height: 40px;
             border-radius: 50%;
@@ -2098,261 +2024,258 @@ def forum_home():
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: bold;
             color: #000;
+            font-weight: bold;
+            font-size: 1.1em;
         }
-        
-        .author-info h4 {
+
+        .post-author-info {
+            flex: 1;
+        }
+
+        .post-author-name {
+            font-weight: 600;
             color: var(--accent-cyan);
-            margin-bottom: 5px;
-        }
-        
-        .author-info .timestamp {
-            color: var(--text-secondary);
-            font-size: 0.8em;
-        }
-        
-        .post-category {
-            background: rgba(0, 255, 0, 0.1);
-            color: var(--accent-green);
-            padding: 5px 10px;
-            border-radius: 15px;
-            font-size: 0.8em;
-        }
-        
-        .post-title {
-            color: var(--text-primary);
-            font-size: 1.2em;
-            margin-bottom: 10px;
-            display: block;
             text-decoration: none;
         }
-        
-        .post-title:hover {
+
+        .post-author-name:hover {
             color: var(--accent-green);
         }
-        
+
+        .post-meta {
+            display: flex;
+            gap: 15px;
+            color: var(--text-secondary);
+            font-size: 0.85em;
+            margin-top: 5px;
+        }
+
+        .post-title {
+            font-size: 1.4em;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: var(--text-primary);
+            text-decoration: none;
+            display: block;
+        }
+
+        .post-title:hover {
+            color: var(--accent-cyan);
+        }
+
         .post-content {
             color: var(--text-secondary);
-            margin-bottom: 15px;
             line-height: 1.6;
+            margin-bottom: 20px;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
-        
+
         .post-footer {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding-top: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
-        
+
         .post-stats {
             display: flex;
             gap: 20px;
         }
-        
-        .stat {
+
+        .post-stat {
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 8px;
             color: var(--text-secondary);
             font-size: 0.9em;
         }
-        
-        .stat i {
-            color: var(--accent-green);
+
+        .post-stat-icon {
+            color: var(--accent-purple);
         }
-        
-        .read-more {
+
+        .post-category {
+            background: rgba(188, 140, 255, 0.1);
+            color: var(--accent-purple);
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: 500;
+        }
+
+        .read-more-btn {
+            background: rgba(88, 166, 255, 0.1);
             color: var(--accent-cyan);
             text-decoration: none;
+            padding: 8px 18px;
+            border-radius: 6px;
             font-size: 0.9em;
-            display: flex;
-            align-items: center;
-            gap: 5px;
+            font-weight: 500;
+            transition: all 0.3s;
         }
-        
-        /* Footer */
+
+        .read-more-btn:hover {
+            background: rgba(88, 166, 255, 0.2);
+            transform: translateX(5px);
+        }
+
+        .no-posts {
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--text-secondary);
+        }
+        .no-posts-icon {
+            font-size: 5em;
+            color: var(--accent-green);
+            opacity: 0.3;
+            margin-bottom: 20px;
+        }
+        .no-posts h3 { font-size: 1.6em; margin-bottom: 15px; color: var(--text-primary); }
+        .no-posts p { font-size: 1.1em; font-style: italic; }
+
         .forum-footer {
             text-align: center;
-            padding: 20px;
+            padding: 30px 20px;
             color: var(--text-secondary);
             font-size: 0.9em;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
-            margin-top: 30px;
+            margin-top: 50px;
         }
-        
-        /* Alert Messages */
-        .alert {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+
+        @media (max-width: 992px) {
+            .forum-main { grid-template-columns: 1fr; }
+            .sidebar { order: 2; }
         }
-        
-        .alert-success {
-            background: rgba(0, 255, 0, 0.1);
-            border: 1px solid var(--accent-green);
-            color: var(--accent-green);
-        }
-        
-        .alert-error {
-            background: rgba(255, 51, 51, 0.1);
-            border: 1px solid var(--accent-red);
-            color: var(--accent-red);
+
+        @media (max-width: 768px) {
+            .forum-header { flex-direction: column; gap: 20px; text-align: center; }
+            .stats-area { justify-content: center; }
+            .nav-buttons { justify-content: center; }
+            .post-footer { flex-direction: column; gap: 15px; align-items: flex-start; }
+            .post-stats { justify-content: space-between; width: 100%; }
         }
     </style>
 </head>
 <body>
     <div class="matrix-grid"></div>
-    
+
     <div class="forum-container">
-        <!-- Header -->
         <header class="forum-header">
             <div class="logo-area">
-                <div class="logo-icon">
-                    <i class="fas fa-comments"></i>
-                </div>
+                <div class="logo-icon"><i class="fas fa-comments"></i></div>
                 <div class="logo-text">
                     <h1>VAHSET COMMUNITY</h1>
                     <p>Terminal OSINT Forum</p>
                 </div>
             </div>
-            
+
             <div class="stats-area">
                 <div class="stat-box">
                     <div class="stat-number">{{ total_visitors }}</div>
-                    <div class="stat-label">MEMBERS</div>
+                    <div class="stat-label">Members</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-number">{{ online_users }}</div>
-                    <div class="stat-label">ONLINE</div>
+                    <div class="stat-label">Online</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-number">{{ active_posts }}</div>
-                    <div class="stat-label">POSTS</div>
+                    <div class="stat-label">Posts</div>
                 </div>
             </div>
-            
+
             <div class="nav-buttons">
-                <a href="/terminal" class="nav-btn btn-purple">
-                    <i class="fas fa-terminal"></i>
-                    OSINT'E GEÇ
-                </a>
                 {% if current_user.is_authenticated %}
-                <a href="/forum/profile" class="nav-btn btn-primary">
-                    <i class="fas fa-user"></i>
-                    Profile
-                </a>
-                <a href="/forum/logout" class="nav-btn btn-danger">
-                    <i class="fas fa-sign-out-alt"></i>
-                    Logout
-                </a>
+                    <a href="/forum/messages" class="nav-btn btn-primary"><i class="fas fa-envelope"></i> Mesajlar</a>
+                {% endif %}
+                {% if current_user.is_authenticated and current_user.is_admin %}
+                    <a href="/forum/admin" class="nav-btn" style="background:#ff3333;color:#000;"><i class="fas fa-shield-alt"></i> ADMIN PANEL</a>
+                {% endif %}
+                <a href="/terminal" class="nav-btn btn-purple"><i class="fas fa-terminal"></i> OSINT'E GEÇ</a>
+                {% if current_user.is_authenticated %}
+                    <a href="/forum/profile" class="nav-btn btn-primary"><i class="fas fa-user"></i> Profile</a>
+                    <a href="/forum/logout" class="nav-btn btn-danger"><i class="fas fa-sign-out-alt"></i> Logout</a>
                 {% else %}
-                <a href="/forum/login" class="nav-btn btn-primary">
-                    <i class="fas fa-sign-in-alt"></i>
-                    Login
-                </a>
-                <a href="/forum/register" class="nav-btn btn-secondary">
-                    <i class="fas fa-user-plus"></i>
-                    Register
-                </a>
+                    <a href="/forum/login" class="nav-btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login</a>
+                    <a href="/forum/register" class="nav-btn btn-secondary"><i class="fas fa-user-plus"></i> Register</a>
                 {% endif %}
             </div>
         </header>
-        
+
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
-                    <div class="alert alert-{{ category }}">
+                    <div class="alert alert-{{ category }}" style="padding:15px;border-radius:8px;margin-bottom:20px;background:rgba({{ '0,255,0' if category=='success' else '255,51,51' }},0.1);border:1px solid {{ 'var(--accent-green)' if category=='success' else 'var(--accent-red)' }};color:{{ 'var(--accent-green)' if category=='success' else 'var(--accent-red)' }};display:flex;align-items:center;gap:10px;">
                         <i class="fas fa-{{ 'check-circle' if category == 'success' else 'exclamation-triangle' }}"></i>
                         {{ message }}
                     </div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
-        
-        <!-- Main Content -->
+
         <div class="forum-main">
-            <!-- Sidebar -->
             <aside class="sidebar">
                 <div class="sidebar-section">
-                    <h3 class="section-title">
-                        <i class="fas fa-list"></i>
-                        CATEGORIES
-                    </h3>
+                    <h3 class="section-title"><i class="fas fa-list"></i> KATEGORİLER</h3>
                     <ul class="category-list">
                         {% for category in categories %}
-                        <li class="category-item">
-                            <i class="fas fa-hashtag"></i>
-                            {{ category }}
-                        </li>
+                        <li class="category-item"><i class="fas fa-hashtag"></i> {{ category }}</li>
                         {% endfor %}
                     </ul>
                 </div>
-                
+
                 <div class="sidebar-section">
-                    <h3 class="section-title">
-                        <i class="fas fa-fire"></i>
-                        TRENDING
-                    </h3>
-                    <div style="color: var(--text-secondary); font-size: 0.9em;">
-                        <p>• OSINT Techniques</p>
-                        <p>• Python Security</p>
-                        <p>• Network Analysis</p>
-                        <p>• Data Privacy</p>
+                    <h3 class="section-title"><i class="fas fa-fire"></i> TRENDİNG</h3>
+                    <div style="color:var(--text-secondary);line-height:1.8;">
+                        • OSINT Techniques<br>
+                        • Python Security<br>
+                        • Network Analysis<br>
+                        • Data Privacy
                     </div>
                 </div>
-                
+
                 <div class="sidebar-section">
-                    <h3 class="section-title">
-                        <i class="fas fa-info-circle"></i>
-                        FORUM RULES
-                    </h3>
-                    <div style="color: var(--text-secondary); font-size: 0.8em;">
-                        <p>1. Be respectful</p>
-                        <p>2. No spam</p>
-                        <p>3. Keep it legal</p>
-                        <p>4. Help others</p>
+                    <h3 class="section-title"><i class="fas fa-info-circle"></i> FORUM KURALLARI</h3>
+                    <div style="color:var(--text-secondary);font-size:0.9em;line-height:1.7;">
+                        1. Be respectful<br>
+                        2. No spam<br>
+                        3. Keep it legal<br>
+                        4. Help others
                     </div>
                 </div>
             </aside>
-            
-            <!-- Posts -->
+
             <main class="posts-container">
                 <div class="posts-header">
-                    <h2>
-                        <i class="fas fa-comments"></i>
-                        LATEST DISCUSSIONS
-                    </h2>
+                    <h2><i class="fas fa-comments"></i> SON TARTIŞMALAR</h2>
                     {% if current_user.is_authenticated %}
-                    <button class="create-post-btn" onclick="window.location.href='/forum/create'">
-                        <i class="fas fa-plus"></i>
-                        CREATE POST
-                    </button>
+                        <button class="create-post-btn" onclick="window.location.href='/forum/create'">
+                            <i class="fas fa-plus"></i> CREATE POST
+                        </button>
                     {% endif %}
                 </div>
-                
-                <div class="posts-list">
-                    {% if posts %}
+
+                {% if posts %}
+                    <div class="post-list">
                         {% for post in posts %}
                         <div class="post-card">
                             <div class="post-header">
-                                <div class="post-author">
-                                    <div class="author-avatar">
-                                        {{ post.author.username[0]|upper }}
-                                    </div>
-                                    <div class="author-info">
-                                        <h4>{{ post.author.username }}</h4>
-                                        <div class="timestamp">
-                                            {{ post.timestamp.strftime('%Y-%m-%d %H:%M') }}
-                                        </div>
-                                    </div>
+                                <div class="post-author-avatar">
+                                    {{ post.author.username[0]|upper }}
                                 </div>
-                                <div class="post-category">
-                                    {{ post.category }}
+                                <div class="post-author-info">
+                                    <a href="/forum/profile" class="post-author-name">
+                                        {{ post.author.username }}
+                                    </a>
+                                    <div class="post-meta">
+                                        <span><i class="far fa-clock"></i> {{ post.timestamp.strftime('%d.%m.%Y %H:%M') }}</span>
+                                        <span><i class="fas fa-tag"></i> {{ post.category }}</span>
+                                    </div>
                                 </div>
                             </div>
                             
@@ -2361,89 +2284,61 @@ def forum_home():
                             </a>
                             
                             <div class="post-content">
-                                {{ post.content[:200] }}{% if post.content|length > 200 %}...{% endif %}
+                                {{ post.content|truncate(200, True, '...') }}
                             </div>
                             
                             <div class="post-footer">
                                 <div class="post-stats">
-                                    <div class="stat">
-                                        <i class="far fa-comment"></i>
-                                        {{ post.comments|length }} comments
-                                    </div>
-                                    <div class="stat">
-                                        <i class="far fa-heart"></i>
-                                        {{ post.likes }} likes
-                                    </div>
-                                    <div class="stat">
-                                        <i class="far fa-eye"></i>
+                                    <span class="post-stat">
+                                        <i class="far fa-eye post-stat-icon"></i>
                                         {{ post.views }} views
-                                    </div>
+                                    </span>
+                                    <span class="post-stat">
+                                        <i class="far fa-comment post-stat-icon"></i>
+                                        {{ post.comments|length }} comments
+                                    </span>
+                                    <span class="post-stat">
+                                        <i class="far fa-heart post-stat-icon"></i>
+                                        {{ post.likes }} likes
+                                    </span>
                                 </div>
-                                <a href="/forum/post/{{ post.id }}" class="read-more">
+                                <a href="/forum/post/{{ post.id }}" class="read-more-btn">
                                     Read More <i class="fas fa-arrow-right"></i>
                                 </a>
                             </div>
                         </div>
                         {% endfor %}
-                    {% else %}
-                        <div style="text-align: center; padding: 40px; color: var(--text-secondary);">
-                            <i class="fas fa-comments" style="font-size: 3em; margin-bottom: 20px; opacity: 0.5;"></i>
-                            <h3>No posts yet</h3>
-                            <p>Be the first to start a discussion!</p>
-                            {% if not current_user.is_authenticated %}
-                            <p style="margin-top: 15px;">
-                                <a href="/forum/register" class="nav-btn btn-primary" style="display: inline-flex;">
-                                    <i class="fas fa-user-plus"></i>
-                                    Join Now
+                    </div>
+                {% else %}
+                    <div class="no-posts">
+                        <div class="no-posts-icon"><i class="fas fa-comments"></i></div>
+                        <h3>No posts yet</h3>
+                        <p>Be the first to start a discussion!</p>
+                        {% if not current_user.is_authenticated %}
+                            <p style="margin-top: 25px;">
+                                <a href="/forum/register" class="nav-btn btn-primary" style="display: inline-flex; padding: 12px 30px; font-size: 1.1em;">
+                                    <i class="fas fa-user-plus"></i> Join Now
                                 </a>
                             </p>
-                            {% endif %}
-                        </div>
-                    {% endif %}
-                </div>
+                        {% endif %}
+                    </div>
+                {% endif %}
             </main>
         </div>
-        
-        <!-- Footer -->
+
         <footer class="forum-footer">
             <p>VAHSET COMMUNITY v1.0 • Terminal OSINT Forum • All discussions are secure</p>
-            <p style="margin-top: 10px; font-size: 0.8em;">
+            <p style="margin-top: 12px; opacity: 0.8;">
                 <i class="fas fa-shield-alt"></i>
                 Encrypted Forum • {{ total_visitors }} Members • {{ online_users }} Online
             </p>
         </footer>
     </div>
-    
-    <script>
-        // Auto-update online users count
-        function updateOnlineCount() {
-            fetch('/forum/api/online')
-                .then(response => response.json())
-                .then(data => {
-                    const onlineElement = document.querySelector('.stat-box:nth-child(2) .stat-number');
-                    if (onlineElement) {
-                        onlineElement.textContent = data.online;
-                    }
-                });
-        }
-        
-        // Update every 30 seconds
-        setInterval(updateOnlineCount, 30000);
-        
-        // Emoji picker for posts
-        document.addEventListener('keydown', function(e) {
-            if (e.key === ':' && e.ctrlKey) {
-                e.preventDefault();
-                alert('Emoji picker would open here. Common emojis: 😀 😂 🤔 👏 🔥 💯 🚀 🎯 ⚡ 🔒');
-            }
-        });
-    </script>
 </body>
 </html>
-''', total_visitors=total_visitors, online_users=online_users,
-     active_posts=active_posts, active_users=active_users,
-     posts=posts, categories=categories)
-
+    ''', total_visitors=total_visitors, online_users=online_users,
+         active_posts=active_posts, active_users=active_users,
+         posts=posts, categories=categories)
 @app.route('/forum/register', methods=['GET', 'POST'])
 def forum_register():
     if request.method == 'POST':
@@ -3285,6 +3180,22 @@ def profile():
 <!DOCTYPE html>
 <html lang="tr">
 <head>
+                                  <div class="profile-header">
+    <div class="profile-avatar">
+        <img src="/static/uploads/profiles/{{ user.profile_pic }}" alt="Profil" style="width:100%;height:100%;border-radius:50%;object-fit:cover;"
+             onerror="this.src='/static/default.png';">
+    </div>
+    <div class="profile-info">
+        <h1>@{{ user.username }}</h1>
+        <p style="font-size:1.1em; color:var(--accent-cyan); margin:15px 0;">
+            {{ user.bio or 'Henüz biyo eklenmemiş.' }}
+        </p>
+        <a href="/forum/profile/edit" style="background:var(--gradient-matrix);color:#000;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">
+            <i class="fas fa-edit"></i> Profili Düzenle
+        </a>
+        <!-- diğer bilgiler... -->
+    </div>
+</div>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Profil • {{ user.username }} | VAHSET COMMUNITY</title>
@@ -3390,6 +3301,7 @@ def profile():
 </body>
 </html>
     ''', user=user, user_posts=user_posts, post_count=post_count, comment_count=comment_count, join_date=join_date)
+
 # ==================== OTHER ROUTES ====================
 @app.route('/forum/admin/ban/<int:user_id>')
 @login_required
@@ -3578,7 +3490,402 @@ def restrict_banned_users():
             flash('Hesabınız banlandığı için foruma erişiminiz engellenmiştir.', 'error')
             logout_user()
             return redirect(url_for('forum_home'))
+        # ====================== DM (ÖZEL MESAJ) MODELLERİ VE ROUTES ======================
+# Message modeli zaten tanımlı, ekstra bir şey gerekmiyor
+
+@app.route('/forum/messages')
+@login_required
+def messages_inbox():
+    # Gelen mesajlar (en yeni üstte)
+    received = Message.query.filter_by(receiver_id=current_user.id)\
+                .order_by(desc(Message.timestamp)).all()
+    # Gönderilen mesajlar
+    sent = Message.query.filter_by(sender_id=current_user.id)\
+                .order_by(desc(Message.timestamp)).all()
+
+    # Okunmamış mesaj sayısı
+    unread_count = Message.query.filter_by(receiver_id=current_user.id, is_read=False).count()
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Özel Mesajlar | VAHSET COMMUNITY</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --accent-green: #00ff00;
+            --accent-cyan: #58a6ff;
+            --accent-red: #ff3333;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
+        }
+        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
+        .messages-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .new-msg-btn { background: var(--gradient-matrix); color: #000; padding: 10px 20px; border-radius: 6px; text-decoration: none; }
+        .tabs { display: flex; gap: 20px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: var(--bg-secondary); border-radius: 6px; cursor: pointer; }
+        .tab.active { background: var(--gradient-matrix); color: #000; }
+        .message-list { display: flex; flex-direction: column; gap: 15px; }
+        .message-card {
+            background: var(--bg-secondary);
+            border-left: 4px solid var(--accent-green);
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .message-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .message-sender { font-weight: bold; color: var(--accent-cyan); }
+        .message-time { color: var(--text-secondary); font-size: 0.8em; }
+        .unread { font-weight: bold; color: var(--accent-green); }
+        .no-messages { text-align: center; padding: 60px; color: var(--text-secondary); opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/forum" class="back-link"><i class="fas fa-arrow-left"></i> Foruma Dön</a>
+        <div class="messages-header">
+            <h1><i class="fas fa-envelope"></i> Özel Mesajlar</h1>
+            <a href="/forum/messages/new" class="new-msg-btn"><i class="fas fa-plus"></i> Yeni Mesaj</a>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('received')">Gelen Kutusu {% if unread_count > 0 %}({{ unread_count }} okunmamış){% endif %}</div>
+            <div class="tab" onclick="showTab('sent')">Gönderilenler</div>
+        </div>
+
+        <div id="received" class="message-list">
+            {% if received %}
+                {% for msg in received %}
+                <div class="message-card {% if not msg.is_read %}unread{% endif %}">
+                    <div class="message-header">
+                        <div class="message-sender">Gönderen: {{ msg.sender.username }}</div>
+                        <div class="message-time">{{ msg.timestamp.strftime('%d.%m.%Y %H:%M') }}</div>
+                    </div>
+                    <div>{{ msg.content }}</div>
+                    <div style="margin-top:10px;">
+                        <a href="/forum/messages/reply/{{ msg.sender.id }}" style="color:var(--accent-cyan);font-size:0.9em;">Yanıtla</a>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-messages"><i class="fas fa-envelope-open" style="font-size:3em;"></i><p>Gelen mesajınız yok.</p></div>
+            {% endif %}
+        </div>
+
+        <div id="sent" class="message-list" style="display:none;">
+            {% if sent %}
+                {% for msg in sent %}
+                <div class="message-card">
+                    <div class="message-header">
+                        <div class="message-sender">Alıcı: {{ msg.receiver.username }}</div>
+                        <div class="message-time">{{ msg.timestamp.strftime('%d.%m.%Y %H:%M') }}</div>
+                    </div>
+                    <div>{{ msg.content }}</div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-messages"><i class="fas fa-paper-plane" style="font-size:3em;"></i><p>Gönderdiğiniz mesaj yok.</p></div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        function showTab(tab) {
+            document.getElementById('received').style.display = tab === 'received' ? 'flex' : 'none';
+            document.getElementById('sent').style.display = tab === 'sent' ? 'flex' : 'none';
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        // Okunmamış mesajları okundu olarak işaretle (sayfa yüklendiğinde)
+        fetch('/forum/messages/mark_read', {method: 'POST'});
+    </script>
+</body>
+</html>
+    ''', received=received, sent=sent, unread_count=unread_count)
+
+@app.route('/forum/messages/new', methods=['GET', 'POST'])
+@login_required
+def messages_new():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        content = request.form.get('content')
+
+        receiver = User.query.filter_by(username=username).first()
+        if not receiver:
+            flash('Böyle bir kullanıcı bulunamadı!', 'error')
+            return redirect(url_for('messages_new'))
+
+        if not content.strip():
+            flash('Mesaj içeriği boş olamaz!', 'error')
+            return redirect(url_for('messages_new'))
+
+        msg = Message(
+            content=content.strip(),
+            sender_id=current_user.id,
+            receiver_id=receiver.id
+        )
+        db.session.add(msg)
+        db.session.commit()
+        flash('Mesaj gönderildi!', 'success')
+        return redirect(url_for('messages_inbox'))
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yeni Mesaj | VAHSET COMMUNITY</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root { --bg-primary: #0d1117; --bg-secondary: #161b22; --accent-green: #00ff00; --accent-cyan: #58a6ff; --text-primary: #f0f6fc; --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%); }
+        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
+        .form-box { background: var(--bg-secondary); padding: 30px; border-radius: 10px; border: 1px solid rgba(0,255,0,0.3); }
+        .form-group { margin-bottom: 20px; }
+        .form-label { color: var(--accent-cyan); margin-bottom: 8px; display: block; }
+        .form-input, .form-textarea {
+            width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3);
+            border-radius: 6px; color: var(--text-primary); font-family: inherit;
+        }
+        .form-textarea { min-height: 200px; resize: vertical; }
+        .submit-btn { background: var(--gradient-matrix); color: #000; padding: 12px 25px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/forum/messages" class="back-link"><i class="fas fa-arrow-left"></i> Mesajlara Dön</a>
+        <h1><i class="fas fa-paper-plane"></i> Yeni Mesaj Gönder</h1>
+        <div class="form-box">
+            <form method="POST">
+                <div class="form-group">
+                    <label class="form-label">Alıcı Kullanıcı Adı</label>
+                    <input type="text" name="username" class="form-input" required placeholder="Kullanıcı adı girin">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Mesaj</label>
+                    <textarea name="content" class="form-textarea" required placeholder="Mesajınızı yazın..."></textarea>
+                </div>
+                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Gönder</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+    ''')
+
+@app.route('/forum/messages/reply/<int:receiver_id>', methods=['GET', 'POST'])
+@login_required
+def messages_reply(receiver_id):
+    receiver = User.query.get_or_404(receiver_id)
+
+    if request.method == 'POST':
+        content = request.form.get('content')
+        if content.strip():
+            msg = Message(content=content.strip(), sender_id=current_user.id, receiver_id=receiver.id)
+            db.session.add(msg)
+            db.session.commit()
+            flash('Yanıt gönderildi!', 'success')
+            return redirect(url_for('messages_inbox'))
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ receiver.username }}'a Yanıtla</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Aynı stil yukarıdaki new mesaj ile */
+        :root { --bg-primary: #0d1117; --bg-secondary: #161b22; --accent-green: #00ff00; --accent-cyan: #58a6ff; --text-primary: #f0f6fc; --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%); }
+        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
+        .form-box { background: var(--bg-secondary); padding: 30px; border-radius: 10px; border: 1px solid rgba(0,255,0,0.3); }
+        .form-group { margin-bottom: 20px; }
+        .form-label { color: var(--accent-cyan); margin-bottom: 8px; display: block; }
+        .form-textarea { width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3); border-radius: 6px; color: var(--text-primary); min-height: 200px; }
+        .submit-btn { background: var(--gradient-matrix); color: #000; padding: 12px 25px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/forum/messages" class="back-link"><i class="fas fa-arrow-left"></i> Mesajlara Dön</a>
+        <h1><i class="fas fa-reply"></i> {{ receiver.username }}'a Yanıtla</h1>
+        <div class="form-box">
+            <form method="POST">
+                <div class="form-group">
+                    <label class="form-label">Alıcı: {{ receiver.username }}</label>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Mesaj</label>
+                    <textarea name="content" class="form-textarea" required placeholder="Yanıtınızı yazın..."></textarea>
+                </div>
+                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Gönder</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+    ''', receiver=receiver)
+
+@app.route('/forum/messages/mark_read', methods=['POST'])
+@login_required
+def messages_mark_read():
+    Message.query.filter_by(receiver_id=current_user.id, is_read=False).update({'is_read': True})
+    db.session.commit()
+    return '', 204
+@app.route('/forum/profile/edit', methods=['GET', 'POST'])
+@login_required
+def profile_edit():
+    user = current_user
+    
+    if request.method == 'POST':
+        # Biyo güncelle
+        bio = request.form.get('bio', '').strip()
+        if len(bio) > 500:
+            flash('Biyo en fazla 500 karakter olabilir!', 'error')
+        else:
+            user.bio = bio
+
+        # Profil fotoğrafı yükleme
+        if 'profile_pic' in request.files:
+            file = request.files['profile_pic']
+            if file and file.filename != '':
+                # Dosya uzantısını kontrol et
+                allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+                if '.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions:
+                    filename = f"user_{user.id}_{hashlib.md5(file.filename.encode()).hexdigest()[:8]}.{file.filename.rsplit('.', 1)[1].lower()}"
+                    filepath = os.path.join('static/uploads/profiles', filename)
+                    
+                    # Klasör yoksa oluştur
+                    os.makedirs('static/uploads/profiles', exist_ok=True)
+                    
+                    file.save(filepath)
+                    user.profile_pic = filename
+                    flash('Profil fotoğrafı ve biyo başarıyla güncellendi!', 'success')
+                else:
+                    flash('Geçersiz dosya türü! Sadece PNG, JPG, JPEG, GIF, WEBP kabul edilir.', 'error')
         
+        db.session.commit()
+        return redirect(url_for('profile'))
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Profil Düzenle • {{ user.username }} | VAHSET COMMUNITY</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --accent-green: #00ff00;
+            --accent-cyan: #58a6ff;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
+        }
+        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
+        .container { max-width: 700px; margin: 0 auto; }
+        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
+        .edit-box {
+            background: var(--bg-secondary);
+            border: 1px solid rgba(0,255,0,0.3);
+            border-radius: 12px;
+            padding: 30px;
+        }
+        .current-avatar {
+            width: 120px; height: 120px; border-radius: 50%; object-fit: cover;
+            border: 3px solid var(--accent-green);
+            margin-bottom: 20px;
+        }
+        .form-group { margin-bottom: 25px; }
+        .form-label { color: var(--accent-cyan); margin-bottom: 10px; display: block; font-weight: 500; }
+        .form-textarea {
+            width: 100%; padding: 15px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3);
+            border-radius: 8px; color: var(--text-primary); font-family: inherit; min-height: 150px; resize: vertical;
+        }
+        .form-textarea:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 15px rgba(0,255,0,0.2); }
+        .file-input {
+            padding: 10px; background: rgba(0,0,0,0.5); border: 1px dashed rgba(88,166,255,0.5);
+            border-radius: 8px; color: var(--text-primary); width: 100%;
+        }
+        .submit-btn {
+            background: var(--gradient-matrix); color: #000; padding: 15px 30px; border: none;
+            border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%;
+            font-size: 1.1em; transition: all 0.3s;
+        }
+        .submit-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,255,0,0.4); }
+        .char-count { text-align: right; color: var(--text-secondary); font-size: 0.9em; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/forum/profile" class="back-link"><i class="fas fa-arrow-left"></i> Profile Dön</a>
+        <h1 style="text-align:center; margin-bottom:30px;"><i class="fas fa-user-edit"></i> PROFİL DÜZENLE</h1>
+        
+        <div class="edit-box" style="text-align:center;">
+            <img src="/static/uploads/profiles/{{ user.profile_pic }}" alt="Profil Fotoğrafı" class="current-avatar"
+                 onerror="this.src='/static/default.png';">
+            
+            <form method="POST" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label class="form-label"><i class="fas fa-image"></i> Profil Fotoğrafı Değiştir</label>
+                    <input type="file" name="profile_pic" accept="image/*" class="file-input">
+                    <p style="color:var(--text-secondary);font-size:0.9em;margin-top:8px;">
+                        PNG, JPG, GIF, WEBP desteklenir (max 5MB önerilir)
+                    </p>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label"><i class="fas fa-pen"></i> Biyo (Kendini Tanıt)</label>
+                    <textarea name="bio" class="form-textarea" placeholder="Burada kendini anlatabilirsin... OSINT tutkunu, hacker, araştırmacı vs." 
+                              maxlength="500">{{ user.bio }}</textarea>
+                    <div class="char-count">{{ user.bio|length }}/500</div>
+                </div>
+                
+                <button type="submit" class="submit-btn">
+                    <i class="fas fa-save"></i> DEĞİŞİKLİKLERİ KAYDET
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Karakter sayacı canlı güncelleme
+        document.querySelector('textarea[name="bio"]').addEventListener('input', function() {
+            document.querySelector('.char-count').textContent = this.value.length + '/500';
+        });
+    </script>
+</body>
+</html>
+    ''', user=user)
+# ====================== ADMIN PANEL (Zaten var ama forum header'a link eklemek için forum_home'da küçük değişiklik) ======================
+# forum_home route'undaki nav-buttons kısmına şu satırı ekle:
+# {% if current_user.is_authenticated and current_user.is_admin %}
+#     <a href="/forum/admin" class="nav-btn" style="background:#ff3333;color:#000;"><i class="fas fa-shield-alt"></i> ADMIN PANEL</a>
+# {% endif %}
+
+# Admin panel route'un zaten kodunda var, sadece yukarıdaki mesaj route'larından önce olduğundan emin ol.
+
+# ====================== FORUM HEADER'A DM BUTONU EKLE ======================
+# forum_home route'undaki nav-buttons içine şu satırı da ekle (admin butonunun yanına):
+# {% if current_user.is_authenticated %}
+#     <a href="/forum/messages" class="nav-btn btn-primary"><i class="fas fa-envelope"></i> Mesajlar</a>
+# {% endif %}
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV') == 'development'
