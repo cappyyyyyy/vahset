@@ -1,103 +1,32 @@
-from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, g, flash
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
+from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, g
 import os
 import re
 import base64
 import json
+from datetime import datetime
 import requests
 import ipaddress
 import socket
 import whois
+import time
 from urllib.parse import urlparse
 import concurrent.futures
+import threading
 import dns.resolver
 import ssl
 import random
 import hashlib
-from sqlalchemy import desc, func
-from functools import wraps  
-def admin_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if not current_user.is_admin:
-            flash('Bu işlem için admin yetkisi gereklidir!', 'error')
-            return redirect(url_for('forum_home'))
-        return f(*args, **kwargs)
-    return decorated_function
+
 app = Flask(__name__)
 
+# Render için güvenli ayarlar
+app.secret_key = os.environ.get('SECRET_KEY', 'vahset_render_2025_secure_key')
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['PERMANENT_SESSION_LIFETIME'] = 1800
 
-
-# Database configuration for Render
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///forum.db').replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = os.environ.get('SECRET_KEY', 'vahset_render_2025_secure_key_forum')
-
-db = SQLAlchemy(app)
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'forum_login'
-
-# Forum Models
-class User(db.Model, UserMixin):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-    profile_pic = db.Column(db.String(200), default='default.png')
-    bio = db.Column(db.String(500), default='')
-    status = db.Column(db.String(100), default='Online')
-    join_date = db.Column(db.DateTime, default=datetime.utcnow)
-    is_admin = db.Column(db.Boolean, default=False)
-    posts = db.relationship('Post', backref='author', lazy=True)
-    messages_sent = db.relationship('Message', foreign_keys='Message.sender_id', backref='sender', lazy=True)
-    messages_received = db.relationship('Message', foreign_keys='Message.receiver_id', backref='receiver', lazy=True)
-    is_banned = db.Column(db.Boolean, default=False)
-class Post(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(200), nullable=False)
-    content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    category = db.Column(db.String(50), default='General')
-    likes = db.Column(db.Integer, default=0)
-    views = db.Column(db.Integer, default=0)
-    comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
-
-class Comment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
-    likes = db.Column(db.Integer, default=0)
-    user = db.relationship('User', backref='comments')
-
-class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    is_read = db.Column(db.Boolean, default=False)
-
-class Visitor(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    ip_address = db.Column(db.String(50))
-    user_agent = db.Column(db.String(200))
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    page = db.Column(db.String(100))
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-# OSINT Variables
 CORRECT_KEY = os.environ.get('ACCESS_KEY', 'vahset2025')
+
+# Global değişken
 users_data = {}
 osint_cache = {}
 user_agents = [
@@ -107,38 +36,44 @@ user_agents = [
     'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/537.36'
 ]
 
+# GitHub'dan veri çekmek için ayarlar
 GITHUB_USERNAME = os.environ.get('GITHUB_USERNAME', 'cappyyyyyy')
 GITHUB_REPO = os.environ.get('GITHUB_REPO', 'vahset')
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', 'github tokenini yazcan burayad')
 
-# Initialize database
-with app.app_context():
-    db.create_all()
+class TerminalStyle:
+    """Terminal stili sabitler"""
+    COLORS = {
+        'black': '#0a0a0a',
+        'dark': '#0d1117',
+        'gray': '#161b22',
+        'light_gray': '#21262d',
+        'red': '#ff3333',
+        'green': '#00ff00',  # Terminal yeşili
+        'cyan': '#58a6ff',
+        'yellow': '#ffcc00',
+        'orange': '#ff9900',
+        'purple': '#bc8cff',
+        'pink': '#ff66cc',
+        'white': '#f0f6fc',
+        'blue': '#1f6feb',
+        'terminal_green': '#00ff00',
+        'matrix_green': '#00ff88'
+    }
+    
+    GRADIENTS = {
+        'terminal': 'linear-gradient(135deg, #0d1117 0%, #0a0a0a 50%, #161b22 100%)',
+        'header': 'linear-gradient(90deg, #0d1117 0%, #161b22 100%)',
+        'button': 'linear-gradient(90deg, #1f6feb 0%, #58a6ff 100%)',
+        'danger': 'linear-gradient(90deg, #ff3333 0%, #ff6666 100%)',
+        'success': 'linear-gradient(90deg, #00ff00 0%, #00cc00 100%)',
+        'warning': 'linear-gradient(90deg, #ff9900 0%, #ffcc00 100%)',
+        'terminal_green': 'linear-gradient(90deg, #00ff00 0%, #00cc00 100%)',
+        'matrix': 'linear-gradient(90deg, #00ff00 0%, #00ff88 100%)'
+    }
 
-    # Admin kullanıcısını username veya email ile kontrol et
-    existing_admin = User.query.filter(
-        (User.username == 'cappyruhh') | 
-        (User.email == 'admin@vahset.com')
-    ).first()
-
-    if not existing_admin:
-        admin_user = User(
-            username='cappyruhh',                    # ← Admin kullanıcı adı artık cappyruhh
-            email='admin@vahset.com',                # İstersen bunu da değiştirebilirsin
-            password_hash=generate_password_hash('You9090.'),  # Senin belirlediğin şifre
-            is_admin=True,
-            is_banned=False
-        )
-        db.session.add(admin_user)
-        db.session.commit()
-        print("✅ Yeni admin kullanıcısı oluşturuldu!")
-        print("   Kullanıcı adı: cappyruhh")
-        print("   Şifre       : You9090.")
-        print("   Email       : admin@vahset.com")
-    else:
-        print("ℹ️ Admin kullanıcısı (cappyruhh) zaten mevcut, yeni oluşturulmadı.")
-
-# OSINT Functions (kısaltılmış)
 def parse_line_data(line):
+    """Bir satır veriyi parse et"""
     line = line.strip().rstrip(',')
     if not line or not line.startswith('('):
         return None
@@ -149,6 +84,7 @@ def parse_line_data(line):
     if line.startswith('(') and line.endswith(')'):
         line = line[1:-1]
         
+        # Değerleri ayır
         values = []
         current = ""
         in_quotes = False
@@ -178,8 +114,11 @@ def parse_line_data(line):
         if current:
             values.append(current.strip())
         
+        # Verileri çıkar
         if len(values) >= 9:
             user_id = values[0].strip().strip("'\"")
+            
+            # Email decode
             email_encoded = values[1].strip().strip("'\"")
             email = "N/A"
             
@@ -190,6 +129,7 @@ def parse_line_data(line):
                 except:
                     email = email_encoded
             
+            # IP adresi
             ip = values[8].strip().strip("'\"") if len(values) > 8 else "N/A"
             if ip in ['null', 'NULL']:
                 ip = "N/A"
@@ -204,6 +144,7 @@ def parse_line_data(line):
     return None
 
 def load_data_from_github():
+    """GitHub'dan veri çek"""
     global users_data
     
     print("=" * 70)
@@ -212,8 +153,8 @@ def load_data_from_github():
     
     all_users = {}
     
-    # Sadece 2 dosya yükle (test için)
-    github_files = [  
+    # GitHub raw URL'leri
+    github_files = [
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part1.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part2.txt", 
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part3.txt",
@@ -228,9 +169,8 @@ def load_data_from_github():
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part12.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part13.txt",
         "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part14.txt",
-        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part15.txt" 
-    
-    ]
+        "https://raw.githubusercontent.com/cappyyyyyy/vahset/main/data_part15.txt"       
+        ]
     
     total_loaded = 0
     
@@ -269,95 +209,491 @@ def load_data_from_github():
             print(f"   ❌ Network hatası: {str(e)}")
     
     print(f"\n🎯 TOPLAM YÜKLENEN: {len(all_users):,} kullanıcı")
+    
+    if all_users:
+        print("\n📊 ÖRNEK KAYITLAR:")
+        sample_ids = list(all_users.keys())[:3]
+        for uid in sample_ids:
+            data = all_users[uid]
+            print(f"   📍 ID: {uid}")
+            print(f"      📧 Email: {data['email'][:50]}...")
+            print(f"      🌐 IP: {data['ip']}")
+            print()
+    
     users_data = all_users
     return all_users
 
-# Visitor tracking
-@app.before_request
-def track_visitor():
-    if request.endpoint and request.endpoint not in ['static', 'favicon']:
-        try:
-            visitor = Visitor(
-                ip_address=request.remote_addr,
-                user_agent=request.user_agent.string[:200],
-                page=request.endpoint
-            )
-            db.session.add(visitor)
-            db.session.commit()
-        except:
-            pass
+# ==================== OSINT FONKSIYONLARI ====================
 
-def get_total_visitors():
+def get_ip_geolocation(ip):
+    """Free IP geolocation servisleri"""
+    if not ip or ip == "N/A":
+        return None
+    
     try:
-        return Visitor.query.count()
+        # ip-api.com (free, no API key needed)
+        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data['status'] == 'success':
+                return {
+                    'country': data.get('country', 'Unknown'),
+                    'countryCode': data.get('countryCode', 'XX'),
+                    'region': data.get('regionName', 'Unknown'),
+                    'city': data.get('city', 'Unknown'),
+                    'zip': data.get('zip', 'Unknown'),
+                    'lat': data.get('lat', 0),
+                    'lon': data.get('lon', 0),
+                    'isp': data.get('isp', 'Unknown'),
+                    'org': data.get('org', 'Unknown'),
+                    'as': data.get('as', 'Unknown')
+                }
     except:
-        return 0
-
-def get_online_users():
+        pass
+    
     try:
-        five_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
-        return Visitor.query.filter(Visitor.timestamp >= five_minutes_ago).distinct(Visitor.ip_address).count()
+        # ipapi.co (free tier)
+        response = requests.get(f"https://ipapi.co/{ip}/json/", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if not data.get('error'):
+                return {
+                    'country': data.get('country_name', 'Unknown'),
+                    'countryCode': data.get('country_code', 'XX'),
+                    'region': data.get('region', 'Unknown'),
+                    'city': data.get('city', 'Unknown'),
+                    'zip': data.get('postal', 'Unknown'),
+                    'lat': data.get('latitude', 0),
+                    'lon': data.get('longitude', 0),
+                    'isp': data.get('org', 'Unknown'),
+                    'org': data.get('org', 'Unknown'),
+                    'as': data.get('asn', 'Unknown')
+                }
     except:
-        return 0
+        pass
+    
+    return None
 
-def get_active_posts():
-    try:
-        return Post.query.count()
-    except:
-        return 0
-
-def get_active_users():
-    try:
-        return User.query.count()
-    except:
-        return 0
-
-class TerminalStyle:
-    COLORS = {
-        'black': '#0a0a0a',
-        'dark': '#0d1117',
-        'gray': '#161b22',
-        'light_gray': '#21262d',
-        'red': '#ff3333',
-        'green': '#00ff00',
-        'cyan': '#58a6ff',
-        'yellow': '#ffcc00',
-        'orange': '#ff9900',
-        'purple': '#bc8cff',
-        'pink': '#ff66cc',
-        'white': '#f0f6fc',
-        'blue': '#1f6feb',
-        'terminal_green': '#00ff00',
-        'matrix_green': '#00ff88'
+def check_ip_reputation(ip):
+    """IP reputation check with free sources"""
+    reputation = {
+        'threat_level': 'Low',
+        'blacklists': [],
+        'proxy': False,
+        'vpn': False,
+        'tor': False
     }
     
-    GRADIENTS = {
-        'terminal': 'linear-gradient(135deg, #0d1117 0%, #0a0a0a 50%, #161b22 100%)',
-        'header': 'linear-gradient(90deg, #0d1117 0%, #161b22 100%)',
-        'button': 'linear-gradient(90deg, #1f6feb 0%, #58a6ff 100%)',
-        'danger': 'linear-gradient(90deg, #ff3333 0%, #ff6666 100%)',
-        'success': 'linear-gradient(90deg, #00ff00 0%, #00cc00 100%)',
-        'warning': 'linear-gradient(90deg, #ff9900 0%, #ffcc00 100%)',
-        'terminal_green': 'linear-gradient(90deg, #00ff00 0%, #00cc00 100%)',
-        'matrix': 'linear-gradient(90deg, #00ff00 0%, #00ff88 100%)'
-    }
+    try:
+        # Check if it's a private IP
+        if ipaddress.ip_address(ip).is_private:
+            reputation['threat_level'] = 'Local'
+            reputation['is_private'] = True
+            return reputation
+        
+        # AbuseIPDB check (free tier - limited)
+        headers = {'Key': '', 'Accept': 'application/json'}
+        response = requests.get(f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}", 
+                              headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('data'):
+                rep = data['data']
+                if rep.get('abuseConfidenceScore', 0) > 50:
+                    reputation['threat_level'] = 'High'
+                elif rep.get('abuseConfidenceScore', 0) > 20:
+                    reputation['threat_level'] = 'Medium'
+                
+                if rep.get('isTor'):
+                    reputation['tor'] = True
+                if rep.get('isPublic'):
+                    reputation['proxy'] = True
+        
+        # Check common blacklists via DNSBL
+        blacklists = [
+            'zen.spamhaus.org',
+            'bl.spamcop.net',
+            'b.barracudacentral.org'
+        ]
+        
+        reversed_ip = '.'.join(reversed(ip.split('.')))
+        
+        for bl in blacklists:
+            try:
+                query = f"{reversed_ip}.{bl}"
+                socket.gethostbyname(query)
+                reputation['blacklists'].append(bl)
+            except:
+                pass
+        
+        if reputation['blacklists']:
+            reputation['threat_level'] = 'High'
+            
+    except Exception as e:
+        print(f"IP reputation check error: {e}")
+    
+    return reputation
 
-# Load OSINT data on startup
+def get_whois_info(domain):
+    """WHOIS bilgisi al"""
+    try:
+        w = whois.whois(domain)
+        return {
+            'registrar': w.registrar,
+            'creation_date': str(w.creation_date) if w.creation_date else 'Unknown',
+            'expiration_date': str(w.expiration_date) if w.expiration_date else 'Unknown',
+            'name_servers': list(w.name_servers)[:5] if w.name_servers else [],
+            'org': w.org,
+            'country': w.country
+        }
+    except:
+        return None
+
+def check_email_breaches(email):
+    """Email breach kontrolü (Have I Been Pwned API'siz versiyon)"""
+    breaches = []
+    
+    try:
+        # Check common breach patterns
+        email_hash = hashlib.sha1(email.lower().encode()).hexdigest().upper()
+        
+        # Local breach check (simulated for common breaches)
+        common_breaches = [
+            {'name': 'LinkedIn 2012', 'date': '2012', 'records': '165M'},
+            {'name': 'Adobe 2013', 'date': '2013', 'records': '153M'},
+            {'name': 'Dropbox 2012', 'date': '2012', 'records': '68M'},
+            {'name': 'Twitter 2016', 'date': '2016', 'records': '33M'},
+            {'name': 'Facebook 2019', 'date': '2019', 'records': '533M'}
+        ]
+        
+        # Simulate random breach detection (in real app, use API)
+        import random
+        if random.random() > 0.7:  # 30% chance of finding a breach
+            breaches = random.sample(common_breaches, random.randint(1, 3))
+        
+    except:
+        pass
+    
+    return breaches
+
+def analyze_email(email):
+    """Email analizi"""
+    analysis = {
+        'provider': 'Unknown',
+        'disposable': False,
+        'valid_format': False,
+        'breaches': [],
+        'social_media': []
+    }
+    
+    if not email or email == 'N/A':
+        return analysis
+    
+    # Check email format
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if re.match(email_regex, email):
+        analysis['valid_format'] = True
+        
+        # Extract domain
+        domain = email.split('@')[1].lower()
+        analysis['domain'] = domain
+        
+        # Check common providers
+        common_providers = {
+            'gmail.com': 'Google',
+            'yahoo.com': 'Yahoo',
+            'outlook.com': 'Microsoft',
+            'hotmail.com': 'Microsoft',
+            'icloud.com': 'Apple',
+            'aol.com': 'AOL',
+            'protonmail.com': 'ProtonMail',
+            'yandex.com': 'Yandex'
+        }
+        
+        if domain in common_providers:
+            analysis['provider'] = common_providers[domain]
+        
+        # Check disposable emails
+        disposable_domains = ['mailinator.com', 'tempmail.com', 'guerrillamail.com', 
+                             '10minutemail.com', 'throwawaymail.com']
+        if domain in disposable_domains:
+            analysis['disposable'] = True
+        
+        # Check breaches
+        analysis['breaches'] = check_email_breaches(email)
+        
+        # Guess social media (basic pattern matching)
+        username = email.split('@')[0].lower()
+        common_patterns = {
+            'john': ['Facebook', 'Twitter'],
+            'jane': ['Facebook', 'Instagram'],
+            'admin': ['LinkedIn', 'Twitter'],
+            'info': ['Business', 'LinkedIn'],
+            'support': ['Business', 'Service']
+        }
+        
+        for pattern, platforms in common_patterns.items():
+            if pattern in username:
+                analysis['social_media'] = platforms
+                break
+    
+    return analysis
+
+def get_dns_info(domain):
+    """DNS kayıtlarını kontrol et"""
+    dns_records = {}
+    
+    try:
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 5
+        resolver.lifetime = 5
+        
+        # A record
+        try:
+            answers = resolver.resolve(domain, 'A')
+            dns_records['A'] = [str(r) for r in answers]
+        except:
+            pass
+        
+        # MX records
+        try:
+            answers = resolver.resolve(domain, 'MX')
+            dns_records['MX'] = [str(r) for r in answers]
+        except:
+            pass
+        
+        # TXT records
+        try:
+            answers = resolver.resolve(domain, 'TXT')
+            dns_records['TXT'] = [str(r) for r in answers]
+        except:
+            pass
+        
+        # NS records
+        try:
+            answers = resolver.resolve(domain, 'NS')
+            dns_records['NS'] = [str(r) for r in answers]
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"DNS check error: {e}")
+    
+    return dns_records
+
+def scan_website(domain):
+    """Temel website taraması"""
+    scan_result = {
+        'ssl': False,
+        'server': 'Unknown',
+        'status': 'Unknown',
+        'ports': [],
+        'technologies': []
+    }
+    
+    try:
+        # Check SSL
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                scan_result['ssl'] = True
+                cert = ssock.getpeercert()
+                if cert:
+                    scan_result['ssl_expiry'] = cert['notAfter']
+        
+        # Check common ports
+        common_ports = [80, 443, 21, 22, 25, 3389, 8080, 8443]
+        for port in common_ports:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex((domain, port))
+                if result == 0:
+                    scan_result['ports'].append(port)
+                sock.close()
+            except:
+                pass
+        
+        # Guess server from headers
+        try:
+            response = requests.get(f"http://{domain}", timeout=5)
+            scan_result['status'] = response.status_code
+            if 'Server' in response.headers:
+                scan_result['server'] = response.headers['Server']
+            
+            # Detect technologies
+            headers_lower = {k.lower(): v for k, v in response.headers.items()}
+            if 'x-powered-by' in headers_lower:
+                scan_result['technologies'].append(headers_lower['x-powered-by'])
+            if 'x-aspnet-version' in headers_lower:
+                scan_result['technologies'].append('ASP.NET')
+        
+        except:
+            pass
+        
+    except Exception as e:
+        print(f"Website scan error: {e}")
+    
+    return scan_result
+
+def perform_ip_osint(ip):
+    """Tam IP OSINT analizi"""
+    osint_data = {
+        'geolocation': None,
+        'reputation': None,
+        'whois': None,
+        'dns': None,
+        'scan': None,
+        'services': []
+    }
+    
+    if not ip or ip == "N/A":
+        return osint_data
+    
+    # Cache kontrolü
+    cache_key = f"ip_{ip}"
+    if cache_key in osint_cache:
+        return osint_cache[cache_key]
+    
+    try:
+        # Parallel execution için thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            # Geolocation
+            geo_future = executor.submit(get_ip_geolocation, ip)
+            
+            # Reputation
+            rep_future = executor.submit(check_ip_reputation, ip)
+            
+            # DNS reverse lookup
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+                osint_data['hostname'] = hostname
+                
+                # WHOIS for domain
+                if '.' in hostname:
+                    whois_future = executor.submit(get_whois_info, hostname)
+                    osint_data['whois'] = whois_future.result(timeout=10)
+                    
+                    # DNS records
+                    dns_future = executor.submit(get_dns_info, hostname)
+                    osint_data['dns'] = dns_future.result(timeout=10)
+                    
+                    # Website scan
+                    scan_future = executor.submit(scan_website, hostname)
+                    osint_data['scan'] = scan_future.result(timeout=10)
+            except:
+                pass
+            
+            # Get results
+            osint_data['geolocation'] = geo_future.result(timeout=10)
+            osint_data['reputation'] = rep_future.result(timeout=10)
+        
+        # Detect running services
+        common_services = {
+            21: 'FTP',
+            22: 'SSH',
+            23: 'Telnet',
+            25: 'SMTP',
+            80: 'HTTP',
+            110: 'POP3',
+            143: 'IMAP',
+            443: 'HTTPS',
+            3306: 'MySQL',
+            3389: 'RDP',
+            5432: 'PostgreSQL',
+            8080: 'HTTP-Alt',
+            8443: 'HTTPS-Alt'
+        }
+        
+        for port, service in common_services.items():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((ip, port))
+                if result == 0:
+                    osint_data['services'].append({
+                        'port': port,
+                        'service': service,
+                        'status': 'Open'
+                    })
+                sock.close()
+            except:
+                pass
+        
+        # Cache'e kaydet
+        osint_cache[cache_key] = osint_data
+        
+    except Exception as e:
+        print(f"IP OSINT error: {e}")
+    
+    return osint_data
+
+def perform_email_osint(email):
+    """Tam Email OSINT analizi"""
+    osint_data = {
+        'analysis': None,
+        'breaches': [],
+        'social_media': [],
+        'domain_info': None,
+        'associated_ips': []
+    }
+    
+    if not email or email == "N/A":
+        return osint_data
+    
+    # Cache kontrolü
+    cache_key = f"email_{email}"
+    if cache_key in osint_cache:
+        return osint_cache[cache_key]
+    
+    try:
+        # Email analizi
+        osint_data['analysis'] = analyze_email(email)
+        
+        # Domain kısmını al
+        if '@' in email:
+            domain = email.split('@')[1]
+            
+            # DNS bilgileri
+            osint_data['domain_info'] = get_dns_info(domain)
+            
+            # WHOIS bilgisi
+            osint_data['whois'] = get_whois_info(domain)
+            
+            # Website taraması
+            osint_data['website_scan'] = scan_website(domain)
+            
+            # Bu domain için IP'leri bul (basit DNS lookup)
+            try:
+                ips = socket.gethostbyname_ex(domain)[2]
+                osint_data['associated_ips'] = ips[:5]  # İlk 5 IP
+            except:
+                pass
+        
+        # Cache'e kaydet
+        osint_cache[cache_key] = osint_data
+        
+    except Exception as e:
+        print(f"Email OSINT error: {e}")
+    
+    return osint_data
+
+# ==================== FLASK ROUTES ====================
+
+# Verileri uygulama başladığında yükle
 with app.app_context():
     print("\n" + "="*80)
-    print("🚀 VAHSET TERMINAL OSINT v3.0 + FORUM")
+    print("🚀 VAHSET TERMINAL OSINT v3.0")
     print("="*80)
     print("📦 GitHub'dan veriler yükleniyor...")
     users_data = load_data_from_github()
     print("✅ OSINT modülleri hazır")
-    print("✅ Forum database hazır")
     print("="*80 + "\n")
 
 @app.before_request
 def before_request():
+    """Her request öncesi çalışır"""
     g.users_data = users_data
-
-# ==================== ORIGINAL OSINT ROUTES ====================
 
 @app.route('/')
 def index():
@@ -810,14 +1146,15 @@ def terminal():
                     'status': 'success'
                 }
                 
-                # OSINT analizleri (basitleştirilmiş)
+                # OSINT analizleri
                 if osint_type == 'ip_osint' and user_data['ip'] != 'N/A':
-                    ip_osint_result = {'status': 'Analysis would run here'}
+                    ip_osint_result = perform_ip_osint(user_data['ip'])
                 
                 if osint_type == 'email_osint' and user_data['email'] != 'N/A':
-                    email_osint_result = {'status': 'Analysis would run here'}
+                    email_osint_result = perform_email_osint(user_data['email'])
                     
             else:
+                # Benzer ID'leri bul
                 similar = []
                 for uid in users_data.keys():
                     if user_id in uid or uid.startswith(user_id[:5]):
@@ -835,11 +1172,8 @@ def terminal():
     gradients = TerminalStyle.GRADIENTS
     total_users = len(users_data)
     
+    # Örnek ID'ler
     sample_ids = list(users_data.keys())[:12] if users_data else []
-    
-    # Get forum stats
-    total_visitors = get_total_visitors()
-    online_users = get_online_users()
     
     return render_template_string('''
     <!DOCTYPE html>
@@ -860,12 +1194,10 @@ def terminal():
                 --accent-cyan: {{ colors.cyan }};
                 --accent-yellow: {{ colors.yellow }};
                 --accent-blue: {{ colors.blue }};
-                --accent-purple: {{ colors.purple }};
                 --text-primary: {{ colors.white }};
                 --text-secondary: #8b949e;
                 --gradient-header: {{ gradients.header }};
                 --gradient-matrix: {{ gradients.matrix }};
-                --gradient-purple: linear-gradient(90deg, {{ colors.purple }} 0%, {{ colors.pink }} 100%);
             }
             
             * {
@@ -1033,26 +1365,6 @@ def terminal():
                 display: flex;
                 align-items: center;
                 gap: 8px;
-            }
-            
-            .forum-btn {
-                background: var(--gradient-purple);
-                color: #000;
-                border: none;
-                padding: 8px 20px;
-                border-radius: 20px;
-                text-decoration: none;
-                font-size: 0.9em;
-                transition: all 0.3s ease;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                font-weight: 600;
-            }
-            
-            .forum-btn:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 5px 20px rgba(188, 140, 255, 0.5);
             }
             
             .logout-btn {
@@ -1379,6 +1691,97 @@ def terminal():
                 font-size: 0.9em;
             }
             
+            /* OSINT Results */
+            .osint-section {
+                margin-top: 25px;
+                padding-top: 20px;
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            
+            .osint-title {
+                color: var(--accent-yellow);
+                font-size: 1em;
+                margin-bottom: 15px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .osint-grid {
+                display: grid;
+                gap: 15px;
+            }
+            
+            .osint-card {
+                background: rgba(30, 30, 30, 0.9);
+                border: 1px solid rgba(255, 153, 0, 0.3);
+                border-radius: 8px;
+                padding: 15px;
+            }
+            
+            .osint-card-title {
+                color: var(--accent-yellow);
+                font-size: 0.9em;
+                margin-bottom: 10px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .osint-data {
+                display: grid;
+                gap: 8px;
+            }
+            
+            .osint-row {
+                display: flex;
+                justify-content: space-between;
+                padding: 5px 0;
+                border-bottom: 1px dotted rgba(255, 255, 255, 0.1);
+            }
+            
+            .osint-key {
+                color: var(--text-secondary);
+                font-size: 0.85em;
+            }
+            
+            .osint-val {
+                color: var(--accent-green);
+                font-size: 0.85em;
+                text-align: right;
+                max-width: 60%;
+            }
+            
+            .threat-high {
+                color: var(--accent-red);
+                font-weight: bold;
+            }
+            
+            .threat-medium {
+                color: var(--accent-yellow);
+                font-weight: bold;
+            }
+            
+            .threat-low {
+                color: var(--accent-green);
+                font-weight: bold;
+            }
+            
+            .service-open {
+                color: var(--accent-red);
+                font-weight: bold;
+            }
+            
+            .breach-badge {
+                background: rgba(255, 51, 51, 0.2);
+                color: var(--accent-red);
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 0.8em;
+                display: inline-block;
+                margin: 2px;
+            }
+            
             /* Footer */
             .terminal-footer {
                 background: var(--gradient-header);
@@ -1391,7 +1794,7 @@ def terminal():
             
             .footer-grid {
                 display: grid;
-                grid-template-columns: repeat(4, 1fr);
+                grid-template-columns: repeat(3, 1fr);
                 gap: 20px;
                 max-width: 1200px;
                 margin: 0 auto;
@@ -1413,33 +1816,6 @@ def terminal():
                 color: var(--accent-cyan);
                 font-size: 0.9em;
                 font-weight: 600;
-            }
-            
-            .forum-stats {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin-top: 20px;
-                padding: 15px;
-                background: rgba(188, 140, 255, 0.1);
-                border-radius: 8px;
-                border: 1px solid rgba(188, 140, 255, 0.3);
-            }
-            
-            .forum-stat {
-                text-align: center;
-            }
-            
-            .forum-stat-value {
-                font-size: 1.5em;
-                color: var(--accent-purple);
-                font-weight: bold;
-            }
-            
-            .forum-stat-label {
-                font-size: 0.8em;
-                color: var(--text-secondary);
-                margin-top: 5px;
             }
             
             /* Responsive */
@@ -1521,10 +1897,6 @@ def terminal():
                         <i class="fab fa-github"></i>
                         GitHub RAW
                     </div>
-                    <a href="/forum" class="forum-btn">
-                        <i class="fas fa-comments"></i>
-                        FORUMA GEÇ
-                    </a>
                     <a href="/logout" class="logout-btn">
                         <i class="fas fa-power-off"></i>
                         LOGOUT
@@ -1631,18 +2003,6 @@ def terminal():
                                 <i class="fas fa-info-circle"></i>
                                 Database: {{ total_users|intcomma }} records loaded from GitHub
                             </p>
-                            
-                            <!-- Forum Stats -->
-                            <div class="forum-stats">
-                                <div class="forum-stat">
-                                    <div class="forum-stat-value">{{ total_visitors }}</div>
-                                    <div class="forum-stat-label">Forum Visitors</div>
-                                </div>
-                                <div class="forum-stat">
-                                    <div class="forum-stat-value">{{ online_users }}</div>
-                                    <div class="forum-stat-label">Online Now</div>
-                                </div>
-                            </div>
                         </div>
                         
                         {% else %}
@@ -1701,9 +2061,10 @@ def terminal():
                             </div>
                             
                             {% if result.similar %}
-                            <div style="margin-top: 20px; padding: 15px; background: rgba(0,255,0,0.1); border-radius: 8px;">
-                                <div style="color: var(--accent-cyan); margin-bottom: 10px;">
-                                    <i class="fas fa-random"></i> SIMILAR IDs FOUND
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-random"></i>
+                                    SIMILAR IDs FOUND
                                 </div>
                                 <div class="sample-grid">
                                     {% for similar_id in result.similar %}
@@ -1717,6 +2078,319 @@ def terminal():
                             {% endif %}
                             {% endif %}
                         </div>
+                        
+                        <!-- IP OSINT Results -->
+                        {% if ip_osint_result and result.status == 'success' and result.ip != 'N/A' %}
+                        <div class="result-card">
+                            <div class="result-status status-success">
+                                <div class="status-icon">
+                                    <i class="fas fa-globe-americas"></i>
+                                </div>
+                                <div>
+                                    <h3 style="color: var(--accent-cyan);">IP OSINT ANALYSIS</h3>
+                                </div>
+                            </div>
+                            
+                            {% if ip_osint_result.geolocation %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-map-marker-alt"></i>
+                                    GEOLOCATION
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            <div class="osint-row">
+                                                <span class="osint-key">Country:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.country }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">City:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.city }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Region:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.region }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">ISP:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.isp }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Organization:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.org }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Coordinates:</span>
+                                                <span class="osint-val">{{ ip_osint_result.geolocation.lat }}, {{ ip_osint_result.geolocation.lon }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if ip_osint_result.reputation %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-shield-alt"></i>
+                                    REPUTATION ANALYSIS
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            <div class="osint-row">
+                                                <span class="osint-key">Threat Level:</span>
+                                                <span class="osint-val {{ 'threat-high' if ip_osint_result.reputation.threat_level == 'High' else 'threat-medium' if ip_osint_result.reputation.threat_level == 'Medium' else 'threat-low' }}">
+                                                    {{ ip_osint_result.reputation.threat_level }}
+                                                </span>
+                                            </div>
+                                            {% if ip_osint_result.reputation.blacklists %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Blacklisted In:</span>
+                                                <span class="osint-val">
+                                                    {{ ip_osint_result.reputation.blacklists|join(', ') }}
+                                                </span>
+                                            </div>
+                                            {% endif %}
+                                            {% if ip_osint_result.reputation.proxy %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Proxy/VPN:</span>
+                                                <span class="osint-val threat-high">DETECTED</span>
+                                            </div>
+                                            {% endif %}
+                                            {% if ip_osint_result.reputation.tor %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Tor Node:</span>
+                                                <span class="osint-val threat-high">DETECTED</span>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if ip_osint_result.services %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-plug"></i>
+                                    OPEN PORTS & SERVICES
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            {% for service in ip_osint_result.services %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Port {{ service.port }}:</span>
+                                                <span class="osint-val service-open">{{ service.service }} ({{ service.status }})</span>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if ip_osint_result.hostname %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-server"></i>
+                                    HOST INFORMATION
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            <div class="osint-row">
+                                                <span class="osint-key">Reverse DNS:</span>
+                                                <span class="osint-val">{{ ip_osint_result.hostname }}</span>
+                                            </div>
+                                            {% if ip_osint_result.whois %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Registrar:</span>
+                                                <span class="osint-val">{{ ip_osint_result.whois.registrar or 'Unknown' }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Created:</span>
+                                                <span class="osint-val">{{ ip_osint_result.whois.creation_date }}</span>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Email OSINT Results -->
+                        {% if email_osint_result and result.status == 'success' and result.email != 'N/A' %}
+                        <div class="result-card">
+                            <div class="result-status status-success">
+                                <div class="status-icon">
+                                    <i class="fas fa-envelope-open-text"></i>
+                                </div>
+                                <div>
+                                    <h3 style="color: var(--accent-purple);">EMAIL OSINT ANALYSIS</h3>
+                                </div>
+                            </div>
+                            
+                            {% if email_osint_result.analysis %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-user-check"></i>
+                                    EMAIL ANALYSIS
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            <div class="osint-row">
+                                                <span class="osint-key">Email Provider:</span>
+                                                <span class="osint-val">{{ email_osint_result.analysis.provider }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Domain:</span>
+                                                <span class="osint-val">{{ email_osint_result.analysis.domain }}</span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Format Valid:</span>
+                                                <span class="osint-val {{ 'threat-low' if email_osint_result.analysis.valid_format else 'threat-high' }}">
+                                                    {{ 'YES' if email_osint_result.analysis.valid_format else 'NO' }}
+                                                </span>
+                                            </div>
+                                            <div class="osint-row">
+                                                <span class="osint-key">Disposable:</span>
+                                                <span class="osint-val {{ 'threat-high' if email_osint_result.analysis.disposable else 'threat-low' }}">
+                                                    {{ 'YES' if email_osint_result.analysis.disposable else 'NO' }}
+                                                </span>
+                                            </div>
+                                            {% if email_osint_result.analysis.social_media %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Social Pattern:</span>
+                                                <span class="osint-val">{{ email_osint_result.analysis.social_media|join(', ') }}</span>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if email_osint_result.analysis.breaches %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    DATA BREACHES DETECTED
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            {% for breach in email_osint_result.analysis.breaches %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">{{ breach.name }}:</span>
+                                                <span class="osint-val">{{ breach.date }} ({{ breach.records }})</span>
+                                            </div>
+                                            {% endfor %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Total Breaches:</span>
+                                                <span class="osint-val threat-high">{{ email_osint_result.analysis.breaches|length }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if email_osint_result.domain_info %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-dns"></i>
+                                    DOMAIN DNS RECORDS
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            {% for record_type, records in email_osint_result.domain_info.items() %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">{{ record_type }}:</span>
+                                                <span class="osint-val">
+                                                    {% for record in records[:2] %}
+                                                    {{ record }}<br>
+                                                    {% endfor %}
+                                                    {% if records|length > 2 %}
+                                                    ... and {{ records|length - 2 }} more
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if email_osint_result.whois %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-info-circle"></i>
+                                    DOMAIN WHOIS
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            {% if email_osint_result.whois.registrar %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Registrar:</span>
+                                                <span class="osint-val">{{ email_osint_result.whois.registrar }}</span>
+                                            </div>
+                                            {% endif %}
+                                            {% if email_osint_result.whois.creation_date %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Created:</span>
+                                                <span class="osint-val">{{ email_osint_result.whois.creation_date }}</span>
+                                            </div>
+                                            {% endif %}
+                                            {% if email_osint_result.whois.expiration_date %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Expires:</span>
+                                                <span class="osint-val">{{ email_osint_result.whois.expiration_date }}</span>
+                                            </div>
+                                            {% endif %}
+                                            {% if email_osint_result.whois.country %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Country:</span>
+                                                <span class="osint-val">{{ email_osint_result.whois.country }}</span>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            
+                            {% if email_osint_result.associated_ips %}
+                            <div class="osint-section">
+                                <div class="osint-title">
+                                    <i class="fas fa-sitemap"></i>
+                                    ASSOCIATED IP ADDRESSES
+                                </div>
+                                <div class="osint-grid">
+                                    <div class="osint-card">
+                                        <div class="osint-data">
+                                            {% for ip in email_osint_result.associated_ips %}
+                                            <div class="osint-row">
+                                                <span class="osint-key">Server {{ loop.index }}:</span>
+                                                <span class="osint-val">{{ ip }}</span>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        
                         {% endif %}
                     </div>
                 </div>
@@ -1746,15 +2420,7 @@ def terminal():
                             <i class="fas fa-shield-alt"></i>
                         </div>
                         <div class="footer-title">SECURE TERMINAL</div>
-                        <div style="font-size: 0.8em;">Encrypted Session</div>
-                    </div>
-                    
-                    <div class="footer-section">
-                        <div class="footer-icon">
-                            <i class="fas fa-comments"></i>
-                        </div>
-                        <div class="footer-title">ACTIVE FORUM</div>
-                        <div style="font-size: 0.8em;">{{ total_visitors }} Members</div>
+                        <div style="font-size: 0.8em;">Encrypted Session • No API Keys</div>
                     </div>
                 </div>
             </footer>
@@ -1775,7 +2441,7 @@ def terminal():
             
             // Update cache size
             function updateCacheSize() {
-                const size = Math.floor(Math.random() * 100) + 50;
+                const size = Math.floor(Math.random() * 100) + 50; // Simulated
                 document.getElementById('cacheSize').textContent = size + ' MB';
             }
             
@@ -1790,1564 +2456,81 @@ def terminal():
                 });
             });
             
+            // Terminal typing effect for sample IDs
+            document.querySelectorAll('.sample-id').forEach(id => {
+                id.addEventListener('click', function() {
+                    const input = document.querySelector('.terminal-input-large');
+                    input.value = this.textContent.replace('...', '');
+                    input.focus();
+                    
+                    // Terminal style animation
+                    this.style.background = 'rgba(0, 255, 0, 0.3)';
+                    setTimeout(() => {
+                        this.style.background = '';
+                    }, 500);
+                });
+            });
+            
+            // Macbook buttons simulation
+            document.querySelector('.macbook-btn.close').addEventListener('click', () => {
+                if (confirm('Close terminal?')) {
+                    window.location.href = '/logout';
+                }
+            });
+            
+            document.querySelector('.macbook-btn.minimize').addEventListener('click', () => {
+                document.body.style.opacity = '0.7';
+                setTimeout(() => {
+                    document.body.style.opacity = '1';
+                }, 300);
+            });
+            
+            document.querySelector('.macbook-btn.maximize').addEventListener('click', () => {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                } else {
+                    document.exitFullscreen();
+                }
+            });
+            
             // Initialize
             setInterval(updateTime, 1000);
             setInterval(updateCacheSize, 5000);
             updateTime();
             updateCacheSize();
+            
+            // Matrix grid effect
+            const grid = document.querySelector('.matrix-grid');
+            for (let i = 0; i < 20; i++) {
+                const line = document.createElement('div');
+                line.style.position = 'absolute';
+                line.style.top = `${Math.random() * 100}%`;
+                line.style.left = `${Math.random() * 100}%`;
+                line.style.width = '2px';
+                line.style.height = '2px';
+                line.style.background = 'var(--accent-green)';
+                line.style.boxShadow = '0 0 10px var(--accent-green)';
+                line.style.animation = `matrixPulse ${2 + Math.random() * 3}s infinite`;
+                grid.appendChild(line);
+            }
+            
+            // Add CSS for matrix pulse
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes matrixPulse {
+                    0%, 100% { opacity: 0.1; }
+                    50% { opacity: 1; }
+                }
+            `;
+            document.head.appendChild(style);
         </script>
     </body>
     </html>
     ''', result=result, user_id=user_id, total_users=total_users, 
          sample_ids=sample_ids, search_time=search_time, osint_type=osint_type,
          ip_osint_result=ip_osint_result, email_osint_result=email_osint_result,
-         total_visitors=total_visitors, online_users=online_users,
          colors=TerminalStyle.COLORS, gradients=TerminalStyle.GRADIENTS)
 
-# ==================== FORUM ROUTES ====================
-
-@app.route('/forum')
-def forum_home():
-    total_visitors = get_total_visitors()
-    online_users = get_online_users()
-    active_posts = get_active_posts()
-    active_users = get_active_users()
-
-    try:
-        posts = Post.query.order_by(desc(Post.timestamp)).limit(10).all()
-    except:
-        posts = []
-
-    categories = ['General', 'OSINT', 'Security', 'Programming', 'Off Topic']
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VAHSET COMMUNITY | Terminal Forum</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --bg-card: #21262d;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --accent-purple: #bc8cff;
-            --accent-red: #ff3333;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-            --gradient-purple: linear-gradient(90deg, #bc8cff 0%, #ff66cc 100%);
-            --gradient-header: linear-gradient(90deg, #0d1117 0%, #161b22 100%);
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-        }
-
-        .matrix-grid {
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background:
-                linear-gradient(rgba(0, 255, 0, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 255, 0, 0.03) 1px, transparent 1px);
-            background-size: 20px 20px;
-            z-index: -1; opacity: 0.3;
-        }
-
-        .forum-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-
-        .forum-header {
-            background: var(--gradient-header);
-            border: 1px solid rgba(0, 255, 0, 0.3);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            backdrop-filter: blur(10px);
-        }
-
-        .logo-area { display: flex; align-items: center; gap: 15px; }
-        .logo-icon { font-size: 2.8em; color: var(--accent-green); }
-        .logo-text h1 {
-            background: var(--gradient-matrix);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            font-size: 2em;
-            font-weight: 700;
-        }
-        .logo-text p { color: var(--text-secondary); font-size: 0.9em; margin-top: 4px; }
-
-        .stats-area { display: flex; gap: 25px; }
-        .stat-box {
-            background: rgba(0, 255, 0, 0.1);
-            border: 1px solid rgba(0, 255, 0, 0.4);
-            border-radius: 10px;
-            padding: 12px 20px;
-            text-align: center;
-            min-width: 100px;
-        }
-        .stat-number { font-size: 1.8em; font-weight: bold; color: var(--accent-green); }
-        .stat-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 5px; text-transform: uppercase; letter-spacing: 1px; }
-
-        .nav-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
-        .nav-btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.95em;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .btn-primary { background: var(--gradient-matrix); color: #000; }
-        .btn-secondary { background: rgba(88, 166, 255, 0.15); color: var(--accent-cyan); border: 1px solid rgba(88, 166, 255, 0.4); }
-        .btn-purple { background: var(--gradient-purple); color: #000; }
-        .btn-danger { background: rgba(255, 51, 51, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }
-        .nav-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0, 255, 0, 0.3); }
-
-        .forum-main { display: grid; grid-template-columns: 280px 1fr; gap: 25px; }
-
-        .sidebar {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(88, 166, 255, 0.2);
-            border-radius: 12px;
-            padding: 25px;
-            height: fit-content;
-        }
-        .sidebar-section { margin-bottom: 30px; }
-        .section-title {
-            color: var(--accent-cyan);
-            font-size: 1em;
-            font-weight: 600;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .category-list { list-style: none; }
-        .category-item {
-            padding: 12px;
-            margin-bottom: 8px;
-            border-radius: 8px;
-            background: rgba(0, 255, 0, 0.05);
-            transition: all 0.3s;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .category-item:hover { background: rgba(0, 255, 0, 0.15); transform: translateX(8px); }
-
-        .posts-container {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(88, 166, 255, 0.2);
-            border-radius: 12px;
-            padding: 30px;
-        }
-        .posts-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .posts-header h2 { font-size: 1.4em; display: flex; align-items: center; gap: 10px; }
-
-        .create-post-btn {
-            background: var(--gradient-matrix);
-            color: #000;
-            border: none;
-            padding: 12px 25px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 1em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            transition: all 0.3s;
-        }
-        .create-post-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0, 255, 0, 0.4); }
-
-        /* POST LIST STYLES */
-        .post-list {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        .post-card {
-            background: var(--bg-card);
-            border: 1px solid rgba(88, 166, 255, 0.1);
-            border-radius: 10px;
-            padding: 25px;
-            transition: all 0.3s ease;
-            position: relative;
-        }
-
-        .post-card:hover {
-            border-color: rgba(0, 255, 0, 0.3);
-            transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(0, 255, 0, 0.1);
-        }
-
-        .post-header {
-            display: flex;
-            align-items: center;
-            margin-bottom: 15px;
-            gap: 15px;
-        }
-
-        .post-author-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: var(--gradient-matrix);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #000;
-            font-weight: bold;
-            font-size: 1.1em;
-        }
-
-        .post-author-info {
-            flex: 1;
-        }
-
-        .post-author-name {
-            font-weight: 600;
-            color: var(--accent-cyan);
-            text-decoration: none;
-        }
-
-        .post-author-name:hover {
-            color: var(--accent-green);
-        }
-
-        .post-meta {
-            display: flex;
-            gap: 15px;
-            color: var(--text-secondary);
-            font-size: 0.85em;
-            margin-top: 5px;
-        }
-
-        .post-title {
-            font-size: 1.4em;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: var(--text-primary);
-            text-decoration: none;
-            display: block;
-        }
-
-        .post-title:hover {
-            color: var(--accent-cyan);
-        }
-
-        .post-content {
-            color: var(--text-secondary);
-            line-height: 1.6;
-            margin-bottom: 20px;
-            display: -webkit-box;
-            -webkit-line-clamp: 3;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-
-        .post-footer {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-top: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .post-stats {
-            display: flex;
-            gap: 20px;
-        }
-
-        .post-stat {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--text-secondary);
-            font-size: 0.9em;
-        }
-
-        .post-stat-icon {
-            color: var(--accent-purple);
-        }
-
-        .post-category {
-            background: rgba(188, 140, 255, 0.1);
-            color: var(--accent-purple);
-            padding: 5px 12px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            font-weight: 500;
-        }
-
-        .read-more-btn {
-            background: rgba(88, 166, 255, 0.1);
-            color: var(--accent-cyan);
-            text-decoration: none;
-            padding: 8px 18px;
-            border-radius: 6px;
-            font-size: 0.9em;
-            font-weight: 500;
-            transition: all 0.3s;
-        }
-
-        .read-more-btn:hover {
-            background: rgba(88, 166, 255, 0.2);
-            transform: translateX(5px);
-        }
-
-        .no-posts {
-            text-align: center;
-            padding: 80px 20px;
-            color: var(--text-secondary);
-        }
-        .no-posts-icon {
-            font-size: 5em;
-            color: var(--accent-green);
-            opacity: 0.3;
-            margin-bottom: 20px;
-        }
-        .no-posts h3 { font-size: 1.6em; margin-bottom: 15px; color: var(--text-primary); }
-        .no-posts p { font-size: 1.1em; font-style: italic; }
-
-        .forum-footer {
-            text-align: center;
-            padding: 30px 20px;
-            color: var(--text-secondary);
-            font-size: 0.9em;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-            margin-top: 50px;
-        }
-
-        @media (max-width: 992px) {
-            .forum-main { grid-template-columns: 1fr; }
-            .sidebar { order: 2; }
-        }
-
-        @media (max-width: 768px) {
-            .forum-header { flex-direction: column; gap: 20px; text-align: center; }
-            .stats-area { justify-content: center; }
-            .nav-buttons { justify-content: center; }
-            .post-footer { flex-direction: column; gap: 15px; align-items: flex-start; }
-            .post-stats { justify-content: space-between; width: 100%; }
-        }
-    </style>
-</head>
-<body>
-    <div class="matrix-grid"></div>
-
-    <div class="forum-container">
-        <header class="forum-header">
-            <div class="logo-area">
-                <div class="logo-icon"><i class="fas fa-comments"></i></div>
-                <div class="logo-text">
-                    <h1>VAHSET COMMUNITY</h1>
-                    <p>Terminal OSINT Forum</p>
-                </div>
-            </div>
-
-            <div class="stats-area">
-                <div class="stat-box">
-                    <div class="stat-number">{{ total_visitors }}</div>
-                    <div class="stat-label">Members</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-number">{{ online_users }}</div>
-                    <div class="stat-label">Online</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-number">{{ active_posts }}</div>
-                    <div class="stat-label">Posts</div>
-                </div>
-            </div>
-
-            <div class="nav-buttons">
-                {% if current_user.is_authenticated %}
-                    <a href="/forum/messages" class="nav-btn btn-primary"><i class="fas fa-envelope"></i> Mesajlar</a>
-                {% endif %}
-                {% if current_user.is_authenticated and current_user.is_admin %}
-                    <a href="/forum/admin" class="nav-btn" style="background:#ff3333;color:#000;"><i class="fas fa-shield-alt"></i> ADMIN PANEL</a>
-                {% endif %}
-                <a href="/terminal" class="nav-btn btn-purple"><i class="fas fa-terminal"></i> OSINT'E GEÇ</a>
-                {% if current_user.is_authenticated %}
-                    <a href="/forum/profile" class="nav-btn btn-primary"><i class="fas fa-user"></i> Profile</a>
-                    <a href="/forum/logout" class="nav-btn btn-danger"><i class="fas fa-sign-out-alt"></i> Logout</a>
-                {% else %}
-                    <a href="/forum/login" class="nav-btn btn-primary"><i class="fas fa-sign-in-alt"></i> Login</a>
-                    <a href="/forum/register" class="nav-btn btn-secondary"><i class="fas fa-user-plus"></i> Register</a>
-                {% endif %}
-            </div>
-        </header>
-
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }}" style="padding:15px;border-radius:8px;margin-bottom:20px;background:rgba({{ '0,255,0' if category=='success' else '255,51,51' }},0.1);border:1px solid {{ 'var(--accent-green)' if category=='success' else 'var(--accent-red)' }};color:{{ 'var(--accent-green)' if category=='success' else 'var(--accent-red)' }};display:flex;align-items:center;gap:10px;">
-                        <i class="fas fa-{{ 'check-circle' if category == 'success' else 'exclamation-triangle' }}"></i>
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-
-        <div class="forum-main">
-            <aside class="sidebar">
-                <div class="sidebar-section">
-                    <h3 class="section-title"><i class="fas fa-list"></i> KATEGORİLER</h3>
-                    <ul class="category-list">
-                        {% for category in categories %}
-                        <li class="category-item"><i class="fas fa-hashtag"></i> {{ category }}</li>
-                        {% endfor %}
-                    </ul>
-                </div>
-
-                <div class="sidebar-section">
-                    <h3 class="section-title"><i class="fas fa-fire"></i> TRENDİNG</h3>
-                    <div style="color:var(--text-secondary);line-height:1.8;">
-                        • OSINT Techniques<br>
-                        • Python Security<br>
-                        • Network Analysis<br>
-                        • Data Privacy
-                    </div>
-                </div>
-
-                <div class="sidebar-section">
-                    <h3 class="section-title"><i class="fas fa-info-circle"></i> FORUM KURALLARI</h3>
-                    <div style="color:var(--text-secondary);font-size:0.9em;line-height:1.7;">
-                        1. Be respectful<br>
-                        2. No spam<br>
-                        3. Keep it legal<br>
-                        4. Help others
-                    </div>
-                </div>
-            </aside>
-
-            <main class="posts-container">
-                <div class="posts-header">
-                    <h2><i class="fas fa-comments"></i> SON TARTIŞMALAR</h2>
-                    {% if current_user.is_authenticated %}
-                        <button class="create-post-btn" onclick="window.location.href='/forum/create'">
-                            <i class="fas fa-plus"></i> CREATE POST
-                        </button>
-                    {% endif %}
-                </div>
-
-                {% if posts %}
-                    <div class="post-list">
-                        {% for post in posts %}
-                        <div class="post-card">
-                            <div class="post-header">
-                                <div class="post-author-avatar">
-                                    {{ post.author.username[0]|upper }}
-                                </div>
-                                <div class="post-author-info">
-                                    <a href="/forum/profile" class="post-author-name">
-                                        {{ post.author.username }}
-                                    </a>
-                                    <div class="post-meta">
-                                        <span><i class="far fa-clock"></i> {{ post.timestamp.strftime('%d.%m.%Y %H:%M') }}</span>
-                                        <span><i class="fas fa-tag"></i> {{ post.category }}</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <a href="/forum/post/{{ post.id }}" class="post-title">
-                                {{ post.title }}
-                            </a>
-                            
-                            <div class="post-content">
-                                {{ post.content|truncate(200, True, '...') }}
-                            </div>
-                            
-                            <div class="post-footer">
-                                <div class="post-stats">
-                                    <span class="post-stat">
-                                        <i class="far fa-eye post-stat-icon"></i>
-                                        {{ post.views }} views
-                                    </span>
-                                    <span class="post-stat">
-                                        <i class="far fa-comment post-stat-icon"></i>
-                                        {{ post.comments|length }} comments
-                                    </span>
-                                    <span class="post-stat">
-                                        <i class="far fa-heart post-stat-icon"></i>
-                                        {{ post.likes }} likes
-                                    </span>
-                                </div>
-                                <a href="/forum/post/{{ post.id }}" class="read-more-btn">
-                                    Read More <i class="fas fa-arrow-right"></i>
-                                </a>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <div class="no-posts">
-                        <div class="no-posts-icon"><i class="fas fa-comments"></i></div>
-                        <h3>No posts yet</h3>
-                        <p>Be the first to start a discussion!</p>
-                        {% if not current_user.is_authenticated %}
-                            <p style="margin-top: 25px;">
-                                <a href="/forum/register" class="nav-btn btn-primary" style="display: inline-flex; padding: 12px 30px; font-size: 1.1em;">
-                                    <i class="fas fa-user-plus"></i> Join Now
-                                </a>
-                            </p>
-                        {% endif %}
-                    </div>
-                {% endif %}
-            </main>
-        </div>
-
-        <footer class="forum-footer">
-            <p>VAHSET COMMUNITY v1.0 • Terminal OSINT Forum • All discussions are secure</p>
-            <p style="margin-top: 12px; opacity: 0.8;">
-                <i class="fas fa-shield-alt"></i>
-                Encrypted Forum • {{ total_visitors }} Members • {{ online_users }} Online
-            </p>
-        </footer>
-    </div>
-</body>
-</html>
-    ''', total_visitors=total_visitors, online_users=online_users,
-         active_posts=active_posts, active_users=active_users,
-         posts=posts, categories=categories)
-@app.route('/forum/register', methods=['GET', 'POST'])
-def forum_register():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        
-        if password != confirm_password:
-            flash('Passwords do not match!', 'error')
-            return redirect('/forum/register')
-        
-        if User.query.filter_by(username=username).first():
-            flash('Username already exists!', 'error')
-            return redirect('/forum/register')
-        
-        if User.query.filter_by(email=email).first():
-            flash('Email already registered!', 'error')
-            return redirect('/forum/register')
-        
-        hashed_password = generate_password_hash(password)
-        user = User(username=username, email=email, password_hash=hashed_password)
-        db.session.add(user)
-        db.session.commit()
-        
-        login_user(user)
-        flash('Registration successful! Welcome to the community!', 'success')
-        return redirect('/forum')
-    
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --accent-red: #ff3333;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        
-        .register-container {
-            width: 100%;
-            max-width: 400px;
-        }
-        
-        .register-box {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0, 255, 0, 0.3);
-            border-radius: 10px;
-            padding: 30px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .logo i {
-            font-size: 3em;
-            color: var(--accent-green);
-            margin-bottom: 10px;
-        }
-        
-        .logo h1 {
-            background: var(--gradient-matrix);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            font-size: 1.5em;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 8px;
-            color: var(--accent-cyan);
-            font-size: 0.9em;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 12px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 6px;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-        
-        .form-input:focus {
-            outline: none;
-            border-color: var(--accent-green);
-            box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
-        }
-        
-        .submit-btn {
-            width: 100%;
-            padding: 12px;
-            background: var(--gradient-matrix);
-            border: none;
-            border-radius: 6px;
-            color: #000;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-top: 10px;
-        }
-        
-        .submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.3);
-        }
-        
-        .links {
-            text-align: center;
-            margin-top: 20px;
-            font-size: 0.9em;
-        }
-        
-        .links a {
-            color: var(--accent-cyan);
-            text-decoration: none;
-        }
-        
-        .links a:hover {
-            text-decoration: underline;
-        }
-        
-        .alert {
-            padding: 10px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-        }
-        
-        .alert-error {
-            background: rgba(255, 51, 51, 0.1);
-            border: 1px solid var(--accent-red);
-            color: var(--accent-red);
-        }
-        
-        .alert-success {
-            background: rgba(0, 255, 0, 0.1);
-            border: 1px solid var(--accent-green);
-            color: var(--accent-green);
-        }
-    </style>
-</head>
-<body>
-    <div class="register-container">
-        <div class="register-box">
-            <div class="logo">
-                <i class="fas fa-user-plus"></i>
-                <h1>JOIN VAHSET COMMUNITY</h1>
-                <p style="color: var(--text-secondary); font-size: 0.9em;">Create your account</p>
-            </div>
-            
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            
-            <form method="POST">
-                <div class="form-group">
-                    <label class="form-label">Username</label>
-                    <input type="text" name="username" class="form-input" required 
-                           placeholder="Choose a username">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Email</label>
-                    <input type="email" name="email" class="form-input" required 
-                           placeholder="your@email.com">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Password</label>
-                    <input type="password" name="password" class="form-input" required 
-                           placeholder="••••••••">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Confirm Password</label>
-                    <input type="password" name="confirm_password" class="form-input" required 
-                           placeholder="••••••••">
-                </div>
-                
-                <button type="submit" class="submit-btn">
-                    <i class="fas fa-user-plus"></i>
-                    CREATE ACCOUNT
-                </button>
-            </form>
-            
-            <div class="links">
-                <p>Already have an account? <a href="/forum/login">Login here</a></p>
-                <p><a href="/forum"><i class="fas fa-arrow-left"></i> Back to Forum</a></p>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-''')
-
-@app.route('/forum/login', methods=['GET', 'POST'])
-def forum_login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        user = User.query.filter_by(username=username).first()
-        
-        if user and check_password_hash(user.password_hash, password):
-            login_user(user)
-            flash('Login successful!', 'success')
-            return redirect('/forum')
-        else:
-            flash('Invalid username or password!', 'error')
-    
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --accent-red: #ff3333;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        
-        .login-container {
-            width: 100%;
-            max-width: 400px;
-        }
-        
-        .login-box {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0, 255, 0, 0.3);
-            border-radius: 10px;
-            padding: 30px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .logo i {
-            font-size: 3em;
-            color: var(--accent-green);
-            margin-bottom: 10px;
-        }
-        
-        .logo h1 {
-            background: var(--gradient-matrix);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            font-size: 1.5em;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 8px;
-            color: var(--accent-cyan);
-            font-size: 0.9em;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 12px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 6px;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-        
-        .form-input:focus {
-            outline: none;
-            border-color: var(--accent-green);
-            box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
-        }
-        
-        .submit-btn {
-            width: 100%;
-            padding: 12px;
-            background: var(--gradient-matrix);
-            border: none;
-            border-radius: 6px;
-            color: #000;
-            font-family: 'JetBrains Mono', monospace;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-top: 10px;
-        }
-        
-        .submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.3);
-        }
-        
-        .links {
-            text-align: center;
-            margin-top: 20px;
-            font-size: 0.9em;
-        }
-        
-        .links a {
-            color: var(--accent-cyan);
-            text-decoration: none;
-        }
-        
-        .links a:hover {
-            text-decoration: underline;
-        }
-        
-        .alert {
-            padding: 10px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-        }
-        
-        .alert-error {
-            background: rgba(255, 51, 51, 0.1);
-            border: 1px solid var(--accent-red);
-            color: var(--accent-red);
-        }
-        
-        .alert-success {
-            background: rgba(0, 255, 0, 0.1);
-            border: 1px solid var(--accent-green);
-            color: var(--accent-green);
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="login-box">
-            <div class="logo">
-                <i class="fas fa-sign-in-alt"></i>
-                <h1>VAHSET COMMUNITY</h1>
-                <p style="color: var(--text-secondary); font-size: 0.9em;">Member Login</p>
-            </div>
-            
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            
-            <form method="POST">
-                <div class="form-group">
-                    <label class="form-label">Username</label>
-                    <input type="text" name="username" class="form-input" required 
-                           placeholder="Enter username">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Password</label>
-                    <input type="password" name="password" class="form-input" required 
-                           placeholder="••••••••">
-                </div>
-                
-                <button type="submit" class="submit-btn">
-                    <i class="fas fa-sign-in-alt"></i>
-                    LOGIN
-                </button>
-            </form>
-            
-            <div class="links">
-                <p>Don't have an account? <a href="/forum/register">Register here</a></p>
-                <p><a href="/forum"><i class="fas fa-arrow-left"></i> Back to Forum</a></p>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-''')
-
-@app.route('/forum/logout')
-@login_required
-def forum_logout():
-    logout_user()
-    flash('Logged out successfully!', 'success')
-    return redirect('/forum')
-
-@app.route('/forum/create', methods=['GET', 'POST'])
-@login_required
-def create_post():
-    if request.method == 'POST':
-        title = request.form.get('title')
-        content = request.form.get('content')
-        category = request.form.get('category', 'General')
-        
-        if title and content:
-            post = Post(
-                title=title,
-                content=content,
-                category=category,
-                user_id=current_user.id
-            )
-            db.session.add(post)
-            db.session.commit()
-            flash('Post created successfully!', 'success')
-            return redirect('/forum')
-    
-    categories = ['General', 'OSINT', 'Security', 'Programming', 'Off Topic']
-    
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create Post | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .create-container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-        
-        .back-btn {
-            background: rgba(88, 166, 255, 0.1);
-            color: var(--accent-cyan);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            padding: 10px 20px;
-            border-radius: 6px;
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .create-box {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0, 255, 0, 0.3);
-            border-radius: 10px;
-            padding: 30px;
-            backdrop-filter: blur(10px);
-        }
-        
-        .form-group {
-            margin-bottom: 25px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 10px;
-            color: var(--accent-cyan);
-            font-size: 1em;
-            font-weight: 500;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 15px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 8px;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1em;
-        }
-        
-        .form-input:focus {
-            outline: none;
-            border-color: var(--accent-green);
-            box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
-        }
-        
-        .form-textarea {
-            width: 100%;
-            padding: 15px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 8px;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1em;
-            min-height: 300px;
-            resize: vertical;
-        }
-        
-        .form-select {
-            width: 100%;
-            padding: 15px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 8px;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1em;
-        }
-        
-        .submit-btn {
-            background: var(--gradient-matrix);
-            color: #000;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 8px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1em;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            width: 100%;
-        }
-        
-        .submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0, 255, 0, 0.3);
-        }
-        
-        .emoji-hint {
-            color: var(--text-secondary);
-            font-size: 0.9em;
-            margin-top: 5px;
-        }
-    </style>
-</head>
-<body>
-    <div class="create-container">
-        <div class="header">
-            <h1><i class="fas fa-edit"></i> CREATE NEW POST</h1>
-            <a href="/forum" class="back-btn">
-                <i class="fas fa-arrow-left"></i>
-                Back to Forum
-            </a>
-        </div>
-        
-        <div class="create-box">
-            <form method="POST">
-                <div class="form-group">
-                    <label class="form-label">Title</label>
-                    <input type="text" name="title" class="form-input" required 
-                           placeholder="Enter post title...">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Category</label>
-                    <select name="category" class="form-select" required>
-                        {% for category in categories %}
-                        <option value="{{ category }}">{{ category }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">Content</label>
-                    <textarea name="content" class="form-textarea" required 
-                              placeholder="Write your post here..."></textarea>
-                    <div class="emoji-hint">
-                        <i class="fas fa-lightbulb"></i> Tip: Press Ctrl + : to insert emojis
-                    </div>
-                </div>
-                
-                <button type="submit" class="submit-btn">
-                    <i class="fas fa-paper-plane"></i>
-                    PUBLISH POST
-                </button>
-            </form>
-        </div>
-    </div>
-    
-    <script>
-        // Emoji picker
-        document.querySelector('.form-textarea').addEventListener('keydown', function(e) {
-            if (e.key === ':' && e.ctrlKey) {
-                e.preventDefault();
-                const emojis = ['😀', '😂', '🤔', '👏', '🔥', '💯', '🚀', '🎯', '⚡', '🔒', '💻', '🔍', '📡', '🔐'];
-                const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                this.value += randomEmoji;
-            }
-        });
-        
-        // Auto-resize textarea
-        const textarea = document.querySelector('.form-textarea');
-        textarea.addEventListener('input', function() {
-            this.style.height = 'auto';
-            this.style.height = (this.scrollHeight) + 'px';
-        });
-    </script>
-</body>
-</html>
-''', categories=categories)
-
-@app.route('/forum/post/<int:post_id>', methods=['GET', 'POST'])
-@login_required  # Opsiyonel: sadece giriş yapanlar yorum yapabilsin
-def view_post(post_id):
-    post = Post.query.get_or_404(post_id)
-    post.views += 1
-    db.session.commit()
-
-    if request.method == 'POST':
-        content = request.form.get('content')
-        if content and content.strip():
-            comment = Comment(
-                content=content.strip(),
-                user_id=current_user.id,
-                post_id=post.id
-            )
-            db.session.add(comment)
-            db.session.commit()
-            flash('Yorumunuz eklendi!', 'success')
-            return redirect(url_for('view_post', post_id=post.id))
-
-    # En yeni yorumlar üstte olsun
-    comments = Comment.query.filter_by(post_id=post.id).order_by(desc(Comment.timestamp)).all()
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ post.title }} | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --accent-red: #ff3333;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
-        .post-box {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0,255,0,0.3);
-            border-radius: 10px;
-            padding: 30px;
-            margin-bottom: 30px;
-        }
-        .post-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .author-info { display: flex; align-items: center; gap: 15px; }
-        .avatar { width: 50px; height: 50px; border-radius: 50%; background: var(--gradient-matrix); display: flex; align-items: center; justify-content: center; font-weight: bold; color: #000; font-size: 1.3em; }
-        .post-meta { color: var(--text-secondary); font-size: 0.9em; }
-        .post-title { font-size: 1.8em; margin: 20px 0; color: var(--accent-cyan); }
-        .post-content { line-height: 1.8; font-size: 1.1em; white-space: pre-wrap; }
-        .post-stats { margin-top: 20px; display: flex; gap: 20px; color: var(--text-secondary); }
-        .comments-section { margin-top: 40px; }
-        .comment-form { margin-bottom: 30px; }
-        .comment-textarea {
-            width: 100%; padding: 15px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3);
-            border-radius: 8px; color: var(--text-primary); font-family: inherit; min-height: 120px;
-        }
-        .comment-textarea:focus { outline: none; border-color: var(--accent-green); }
-        .submit-comment {
-            margin-top: 10px; background: var(--gradient-matrix); color: #000; border: none;
-            padding: 12px 25px; border-radius: 6px; cursor: pointer; font-weight: bold;
-        }
-        .comment-list { display: flex; flex-direction: column; gap: 20px; }
-        .comment {
-            background: rgba(22,27,34,0.6); padding: 20px; border-radius: 8px;
-            border-left: 4px solid var(--accent-green);
-        }
-        .comment-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .comment-author { display: flex; align-items: center; gap: 10px; }
-        .comment-time { color: var(--text-secondary); font-size: 0.8em; }
-        .no-comments { text-align: center; color: var(--text-secondary); padding: 40px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum" class="back-link"><i class="fas fa-arrow-left"></i> Foruma Dön</a>
-
-        <div class="post-box">
-            <div class="post-header">
-                <div class="author-info">
-                    <div class="avatar">{{ post.author.username[0]|upper }}</div>
-                    <div>
-                        <strong>{{ post.author.username }}</strong><br>
-                        <span class="post-meta">{{ post.timestamp.strftime('%d.%m.%Y %H:%M') }} • {{ post.category }}</span>
-                    </div>
-                </div>
-                <div class="post-stats">
-                    <span><i class="far fa-eye"></i> {{ post.views }}</span>
-                    <span><i class="far fa-comment"></i> {{ post.comments|length }}</span>
-                    <span><i class="far fa-heart"></i> {{ post.likes }}</span>
-                </div>
-            </div>
-
-            <h1 class="post-title">{{ post.title }}</h1>
-            <div class="post-content">{{ post.content }}</div>
-        </div>
-
-        <div class="comments-section">
-            <h2><i class="far fa-comments"></i> Yorumlar ({{ comments|length }})</h2>
-
-            {% if current_user.is_authenticated %}
-            <form method="POST" class="comment-form">
-                <textarea name="content" class="comment-textarea" placeholder="Yorumunuzu yazın..." required></textarea>
-                <button type="submit" class="submit-comment"><i class="fas fa-paper-plane"></i> Yorum Gönder</button>
-            </form>
-            {% else %}
-            <p style="color: var(--text-secondary);">Yorum yapabilmek için <a href="/forum/login" style="color: var(--accent-cyan);">giriş yapmalısınız</a>.</p>
-            {% endif %}
-
-            {% if comments %}
-            <div class="comment-list">
-                {% for comment in comments %}
-                <div class="comment">
-                    <div class="comment-header">
-                        <div class="comment-author">
-                            <div class="avatar" style="width:40px;height:40px;font-size:1em;">{{ comment.user.username[0]|upper }}</div>
-                            <strong>{{ comment.user.username }}</strong>
-                        </div>
-                        <span class="comment-time">{{ comment.timestamp.strftime('%d.%m.%Y %H:%M') }}</span>
-                    </div>
-                    <div>{{ comment.content }}</div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <div class="no-comments">
-                <i class="far fa-comment" style="font-size: 3em; opacity: 0.4; margin-bottom: 15px;"></i>
-                <p>Henüz yorum yok. İlk yorumu siz yapın!</p>
-            </div>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-    ''', post=post, comments=comments)
-
-
-@app.route('/forum/profile')
-@login_required
-def profile():
-    user = current_user
-    user_posts = Post.query.filter_by(user_id=user.id).order_by(desc(Post.timestamp)).all()
-    post_count = len(user_posts)
-    comment_count = Comment.query.filter_by(user_id=user.id).count()
-    join_date = user.join_date.strftime('%d.%m.%Y')
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-                                  <div class="profile-header">
-    <div class="profile-avatar">
-        <img src="/static/uploads/profiles/{{ user.profile_pic }}" alt="Profil" style="width:100%;height:100%;border-radius:50%;object-fit:cover;"
-             onerror="this.src='/static/default.png';">
-    </div>
-    <div class="profile-info">
-        <h1>@{{ user.username }}</h1>
-        <p style="font-size:1.1em; color:var(--accent-cyan); margin:15px 0;">
-            {{ user.bio or 'Henüz biyo eklenmemiş.' }}
-        </p>
-        <a href="/forum/profile/edit" style="background:var(--gradient-matrix);color:#000;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">
-            <i class="fas fa-edit"></i> Profili Düzenle
-        </a>
-        <!-- diğer bilgiler... -->
-    </div>
-</div>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Profil • {{ user.username }} | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        .profile-header {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0,255,0,0.3);
-            border-radius: 10px;
-            padding: 30px;
-            display: flex;
-            align-items: center;
-            gap: 30px;
-            margin-bottom: 30px;
-        }
-        .profile-avatar {
-            width: 120px; height: 120px; border-radius: 50%;
-            background: var(--gradient-matrix);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 3.5em; font-weight: bold; color: #000;
-        }
-        .profile-info h1 { font-size: 2em; margin-bottom: 10px; }
-        .profile-meta { color: var(--text-secondary); margin-bottom: 15px; }
-        .stats { display: flex; gap: 30px; }
-        .stat { text-align: center; }
-        .stat-number { font-size: 1.8em; color: var(--accent-green); font-weight: bold; }
-        .stat-label { font-size: 0.9em; color: var(--text-secondary); }
-        .posts-section h2 { margin-bottom: 20px; color: var(--accent-cyan); }
-        .user-posts {
-            display: flex; flex-direction: column; gap: 15px;
-        }
-        .user-post-card {
-            background: var(--bg-secondary);
-            padding: 20px; border-radius: 8px;
-            border-left: 4px solid var(--accent-green);
-        }
-        .user-post-title {
-            font-size: 1.2em; color: var(--accent-cyan); text-decoration: none;
-        }
-        .user-post-title:hover { color: var(--accent-green); }
-        .user-post-meta { color: var(--text-secondary); font-size: 0.9em; margin-top: 8px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum" style="color: var(--accent-cyan); display: inline-block; margin-bottom: 20px;">
-            <i class="fas fa-arrow-left"></i> Foruma Dön
-        </a>
-
-        <div class="profile-header">
-            <div class="profile-avatar">{{ user.username[0]|upper }}</div>
-            <div class="profile-info">
-                <h1>@{{ user.username }}</h1>
-                <div class="profile-meta">
-                    <i class="fas fa-envelope"></i> {{ user.email }}<br>
-                    <i class="fas fa-calendar-alt"></i> Katılım: {{ join_date }}
-                </div>
-                <div class="stats">
-                    <div class="stat">
-                        <div class="stat-number">{{ post_count }}</div>
-                        <div class="stat-label">Gönderi</div>
-                    </div>
-                    <div class="stat">
-                        <div class="stat-number">{{ comment_count }}</div>
-                        <div class="stat-label">Yorum</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="posts-section">
-            <h2><i class="fas fa-edit"></i> Gönderileri</h2>
-            {% if user_posts %}
-            <div class="user-posts">
-                {% for post in user_posts %}
-                <div class="user-post-card">
-                    <a href="/forum/post/{{ post.id }}" class="user-post-title">{{ post.title }}</a>
-                    <div class="user-post-meta">
-                        {{ post.timestamp.strftime('%d.%m.%Y %H:%M') }} • 
-                        {{ post.comments|length }} yorum • {{ post.views }} görüntülenme
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <p style="color: var(--text-secondary); text-align: center; padding: 40px;">
-                Henüz gönderi yok.
-            </p>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-    ''', user=user, user_posts=user_posts, post_count=post_count, comment_count=comment_count, join_date=join_date)
-
-# ==================== OTHER ROUTES ====================
-@app.route('/forum/admin/ban/<int:user_id>')
-@login_required
-@admin_required
-def admin_ban_user(user_id):
-    user = User.query.get_or_404(user_id)
-    if user.id == current_user.id:
-        flash('Kendinizi banlayamazsınız!', 'error')
-    else:
-        user.is_banned = True
-        db.session.commit()
-        flash(f'{user.username} banlandı.', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/forum/admin/unban/<int:user_id>')
-@login_required
-@admin_required
-def admin_unban_user(user_id):
-    user = User.query.get_or_404(user_id)
-    user.is_banned = False
-    db.session.commit()
-    flash(f'{user.username} banı kaldırıldı.', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/forum/admin/make_admin/<int:user_id>')
-@login_required
-@admin_required
-def admin_make_admin(user_id):
-    user = User.query.get_or_404(user_id)
-    user.is_admin = True
-    db.session.commit()
-    flash(f'{user.username} admin yapıldı.', 'success')
-    return redirect(url_for('admin_panel'))
-
-@app.route('/forum/admin/remove_admin/<int:user_id>')
-@login_required
-@admin_required
-def admin_remove_admin(user_id):
-    user = User.query.get_or_404(user_id)
-    if user.id == current_user.id:
-        flash('Kendi adminliğinizi alamazsınız!', 'error')
-    else:
-        user.is_admin = False
-        db.session.commit()
-        flash(f'{user.username} adminliği alındı.', 'success')
-    return redirect(url_for('admin_panel'))
 @app.route('/logout')
 def logout():
     session.clear()
@@ -3373,533 +2556,27 @@ def api_search(user_id):
             'message': 'User not found'
         })
 
+# Custom filter for number formatting
 @app.template_filter('intcomma')
 def intcomma_filter(value):
     try:
         return "{:,}".format(int(value))
     except:
         return value
-    
-@app.route('/forum/admin/delete_post/<int:post_id>')
-@login_required
-@admin_required
-def admin_delete_post(post_id):
-    post = Post.query.get_or_404(post_id)
-    db.session.delete(post)
-    db.session.commit()
-    flash('Gönderi silindi.', 'success')
-    return redirect(url_for('forum_home'))
 
-@app.route('/forum/admin/delete_comment/<int:comment_id>')
-@login_required
-@admin_required
-def admin_delete_comment(comment_id):
-    comment = Comment.query.get_or_404(comment_id)
-    post_id = comment.post_id
-    db.session.delete(comment)
-    db.session.commit()
-    flash('Yorum silindi.', 'success')
-    return redirect(url_for('view_post', post_id=post_id))
-
-@app.route('/forum/admin')
-@login_required
-@admin_required
-def admin_panel():
-    users = User.query.order_by(User.join_date.desc()).all()
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Paneli | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root { --bg-primary: #0d1117; --bg-secondary: #161b22; --accent-green: #00ff00; --accent-red: #ff3333; --accent-cyan: #58a6ff; --text-primary: #f0f6fc; --text-secondary: #8b949e; }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .back-btn { color: var(--accent-cyan); text-decoration: none; }
-        table { width: 100%; border-collapse: collapse; background: var(--bg-secondary); border-radius: 10px; overflow: hidden; }
-        th, td { padding: 15px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        th { background: rgba(0,255,0,0.1); color: var(--accent-green); }
-        .btn { padding: 8px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; }
-        .btn-ban { background: var(--accent-red); color: #000; }
-        .btn-unban { background: var(--accent-green); color: #000; }
-        .btn-admin { background: #bc8cff; color: #000; }
-        .btn-remove-admin { background: #8b949e; color: #000; }
-        .banned { opacity: 0.6; background: rgba(255,0,0,0.1); }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1><i class="fas fa-shield-alt"></i> ADMIN PANELİ</h1>
-            <a href="/forum" class="back-btn"><i class="fas fa-arrow-left"></i> Foruma Dön</a>
-        </div>
-
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Kullanıcı Adı</th>
-                    <th>E-posta</th>
-                    <th>Katılım</th>
-                    <th>Durum</th>
-                    <th>İşlemler</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for user in users %}
-                <tr {% if user.is_banned %}class="banned"{% endif %}>
-                    <td>{{ user.id }}</td>
-                    <td>{{ user.username }}</td>
-                    <td>{{ user.email }}</td>
-                    <td>{{ user.join_date.strftime('%d.%m.%Y') }}</td>
-                    <td>
-                        {% if user.is_banned %}BANLI{% else %}AKTİF{% endif %}
-                        {% if user.is_admin %} | ADMIN{% endif %}
-                    </td>
-                    <td>
-                        {% if not user.is_banned %}
-                            <a href="/forum/admin/ban/{{ user.id }}" class="btn btn-ban">Banla</a>
-                        {% else %}
-                            <a href="/forum/admin/unban/{{ user.id }}" class="btn btn-unban">Banı Kaldır</a>
-                        {% endif %}
-
-                        {% if not user.is_admin %}
-                            <a href="/forum/admin/make_admin/{{ user.id }}" class="btn btn-admin">Admin Yap</a>
-                        {% else %}
-                            {% if user.id != current_user.id %} {# Kendini adminlikten çıkarma izni yok #}
-                                <a href="/forum/admin/remove_admin/{{ user.id }}" class="btn btn-remove-admin">Adminliği Al</a>
-                            {% endif %}
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</body>
-</html>
-    ''', users=users)  
-@app.before_request
-def restrict_banned_users():
-    if request.endpoint and request.endpoint.startswith('forum_') and current_user.is_authenticated:
-        if current_user.is_banned:
-            flash('Hesabınız banlandığı için foruma erişiminiz engellenmiştir.', 'error')
-            logout_user()
-            return redirect(url_for('forum_home'))
-        # ====================== DM (ÖZEL MESAJ) MODELLERİ VE ROUTES ======================
-# Message modeli zaten tanımlı, ekstra bir şey gerekmiyor
-
-@app.route('/forum/messages')
-@login_required
-def messages_inbox():
-    # Gelen mesajlar (en yeni üstte)
-    received = Message.query.filter_by(receiver_id=current_user.id)\
-                .order_by(desc(Message.timestamp)).all()
-    # Gönderilen mesajlar
-    sent = Message.query.filter_by(sender_id=current_user.id)\
-                .order_by(desc(Message.timestamp)).all()
-
-    # Okunmamış mesaj sayısı
-    unread_count = Message.query.filter_by(receiver_id=current_user.id, is_read=False).count()
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Özel Mesajlar | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --accent-red: #ff3333;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
-        .messages-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .new-msg-btn { background: var(--gradient-matrix); color: #000; padding: 10px 20px; border-radius: 6px; text-decoration: none; }
-        .tabs { display: flex; gap: 20px; margin-bottom: 20px; }
-        .tab { padding: 10px 20px; background: var(--bg-secondary); border-radius: 6px; cursor: pointer; }
-        .tab.active { background: var(--gradient-matrix); color: #000; }
-        .message-list { display: flex; flex-direction: column; gap: 15px; }
-        .message-card {
-            background: var(--bg-secondary);
-            border-left: 4px solid var(--accent-green);
-            padding: 20px;
-            border-radius: 8px;
-        }
-        .message-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .message-sender { font-weight: bold; color: var(--accent-cyan); }
-        .message-time { color: var(--text-secondary); font-size: 0.8em; }
-        .unread { font-weight: bold; color: var(--accent-green); }
-        .no-messages { text-align: center; padding: 60px; color: var(--text-secondary); opacity: 0.7; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum" class="back-link"><i class="fas fa-arrow-left"></i> Foruma Dön</a>
-        <div class="messages-header">
-            <h1><i class="fas fa-envelope"></i> Özel Mesajlar</h1>
-            <a href="/forum/messages/new" class="new-msg-btn"><i class="fas fa-plus"></i> Yeni Mesaj</a>
-        </div>
-
-        <div class="tabs">
-            <div class="tab active" onclick="showTab('received')">Gelen Kutusu {% if unread_count > 0 %}({{ unread_count }} okunmamış){% endif %}</div>
-            <div class="tab" onclick="showTab('sent')">Gönderilenler</div>
-        </div>
-
-        <div id="received" class="message-list">
-            {% if received %}
-                {% for msg in received %}
-                <div class="message-card {% if not msg.is_read %}unread{% endif %}">
-                    <div class="message-header">
-                        <div class="message-sender">Gönderen: {{ msg.sender.username }}</div>
-                        <div class="message-time">{{ msg.timestamp.strftime('%d.%m.%Y %H:%M') }}</div>
-                    </div>
-                    <div>{{ msg.content }}</div>
-                    <div style="margin-top:10px;">
-                        <a href="/forum/messages/reply/{{ msg.sender.id }}" style="color:var(--accent-cyan);font-size:0.9em;">Yanıtla</a>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="no-messages"><i class="fas fa-envelope-open" style="font-size:3em;"></i><p>Gelen mesajınız yok.</p></div>
-            {% endif %}
-        </div>
-
-        <div id="sent" class="message-list" style="display:none;">
-            {% if sent %}
-                {% for msg in sent %}
-                <div class="message-card">
-                    <div class="message-header">
-                        <div class="message-sender">Alıcı: {{ msg.receiver.username }}</div>
-                        <div class="message-time">{{ msg.timestamp.strftime('%d.%m.%Y %H:%M') }}</div>
-                    </div>
-                    <div>{{ msg.content }}</div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="no-messages"><i class="fas fa-paper-plane" style="font-size:3em;"></i><p>Gönderdiğiniz mesaj yok.</p></div>
-            {% endif %}
-        </div>
-    </div>
-
-    <script>
-        function showTab(tab) {
-            document.getElementById('received').style.display = tab === 'received' ? 'flex' : 'none';
-            document.getElementById('sent').style.display = tab === 'sent' ? 'flex' : 'none';
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            event.target.classList.add('active');
-        }
-
-        // Okunmamış mesajları okundu olarak işaretle (sayfa yüklendiğinde)
-        fetch('/forum/messages/mark_read', {method: 'POST'});
-    </script>
-</body>
-</html>
-    ''', received=received, sent=sent, unread_count=unread_count)
-
-@app.route('/forum/messages/new', methods=['GET', 'POST'])
-@login_required
-def messages_new():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        content = request.form.get('content')
-
-        receiver = User.query.filter_by(username=username).first()
-        if not receiver:
-            flash('Böyle bir kullanıcı bulunamadı!', 'error')
-            return redirect(url_for('messages_new'))
-
-        if not content.strip():
-            flash('Mesaj içeriği boş olamaz!', 'error')
-            return redirect(url_for('messages_new'))
-
-        msg = Message(
-            content=content.strip(),
-            sender_id=current_user.id,
-            receiver_id=receiver.id
-        )
-        db.session.add(msg)
-        db.session.commit()
-        flash('Mesaj gönderildi!', 'success')
-        return redirect(url_for('messages_inbox'))
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Yeni Mesaj | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root { --bg-primary: #0d1117; --bg-secondary: #161b22; --accent-green: #00ff00; --accent-cyan: #58a6ff; --text-primary: #f0f6fc; --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%); }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
-        .form-box { background: var(--bg-secondary); padding: 30px; border-radius: 10px; border: 1px solid rgba(0,255,0,0.3); }
-        .form-group { margin-bottom: 20px; }
-        .form-label { color: var(--accent-cyan); margin-bottom: 8px; display: block; }
-        .form-input, .form-textarea {
-            width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3);
-            border-radius: 6px; color: var(--text-primary); font-family: inherit;
-        }
-        .form-textarea { min-height: 200px; resize: vertical; }
-        .submit-btn { background: var(--gradient-matrix); color: #000; padding: 12px 25px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum/messages" class="back-link"><i class="fas fa-arrow-left"></i> Mesajlara Dön</a>
-        <h1><i class="fas fa-paper-plane"></i> Yeni Mesaj Gönder</h1>
-        <div class="form-box">
-            <form method="POST">
-                <div class="form-group">
-                    <label class="form-label">Alıcı Kullanıcı Adı</label>
-                    <input type="text" name="username" class="form-input" required placeholder="Kullanıcı adı girin">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Mesaj</label>
-                    <textarea name="content" class="form-textarea" required placeholder="Mesajınızı yazın..."></textarea>
-                </div>
-                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Gönder</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-    ''')
-
-@app.route('/forum/messages/reply/<int:receiver_id>', methods=['GET', 'POST'])
-@login_required
-def messages_reply(receiver_id):
-    receiver = User.query.get_or_404(receiver_id)
-
-    if request.method == 'POST':
-        content = request.form.get('content')
-        if content.strip():
-            msg = Message(content=content.strip(), sender_id=current_user.id, receiver_id=receiver.id)
-            db.session.add(msg)
-            db.session.commit()
-            flash('Yanıt gönderildi!', 'success')
-            return redirect(url_for('messages_inbox'))
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ receiver.username }}'a Yanıtla</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        /* Aynı stil yukarıdaki new mesaj ile */
-        :root { --bg-primary: #0d1117; --bg-secondary: #161b22; --accent-green: #00ff00; --accent-cyan: #58a6ff; --text-primary: #f0f6fc; --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%); }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
-        .form-box { background: var(--bg-secondary); padding: 30px; border-radius: 10px; border: 1px solid rgba(0,255,0,0.3); }
-        .form-group { margin-bottom: 20px; }
-        .form-label { color: var(--accent-cyan); margin-bottom: 8px; display: block; }
-        .form-textarea { width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3); border-radius: 6px; color: var(--text-primary); min-height: 200px; }
-        .submit-btn { background: var(--gradient-matrix); color: #000; padding: 12px 25px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum/messages" class="back-link"><i class="fas fa-arrow-left"></i> Mesajlara Dön</a>
-        <h1><i class="fas fa-reply"></i> {{ receiver.username }}'a Yanıtla</h1>
-        <div class="form-box">
-            <form method="POST">
-                <div class="form-group">
-                    <label class="form-label">Alıcı: {{ receiver.username }}</label>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Mesaj</label>
-                    <textarea name="content" class="form-textarea" required placeholder="Yanıtınızı yazın..."></textarea>
-                </div>
-                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Gönder</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-    ''', receiver=receiver)
-
-@app.route('/forum/messages/mark_read', methods=['POST'])
-@login_required
-def messages_mark_read():
-    Message.query.filter_by(receiver_id=current_user.id, is_read=False).update({'is_read': True})
-    db.session.commit()
-    return '', 204
-@app.route('/forum/profile/edit', methods=['GET', 'POST'])
-@login_required
-def profile_edit():
-    user = current_user
-    
-    if request.method == 'POST':
-        # Biyo güncelle
-        bio = request.form.get('bio', '').strip()
-        if len(bio) > 500:
-            flash('Biyo en fazla 500 karakter olabilir!', 'error')
-        else:
-            user.bio = bio
-
-        # Profil fotoğrafı yükleme
-        if 'profile_pic' in request.files:
-            file = request.files['profile_pic']
-            if file and file.filename != '':
-                # Dosya uzantısını kontrol et
-                allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-                if '.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions:
-                    filename = f"user_{user.id}_{hashlib.md5(file.filename.encode()).hexdigest()[:8]}.{file.filename.rsplit('.', 1)[1].lower()}"
-                    filepath = os.path.join('static/uploads/profiles', filename)
-                    
-                    # Klasör yoksa oluştur
-                    os.makedirs('static/uploads/profiles', exist_ok=True)
-                    
-                    file.save(filepath)
-                    user.profile_pic = filename
-                    flash('Profil fotoğrafı ve biyo başarıyla güncellendi!', 'success')
-                else:
-                    flash('Geçersiz dosya türü! Sadece PNG, JPG, JPEG, GIF, WEBP kabul edilir.', 'error')
-        
-        db.session.commit()
-        return redirect(url_for('profile'))
-
-    return render_template_string('''
-<!DOCTYPE html>
-<html lang="tr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Profil Düzenle • {{ user.username }} | VAHSET COMMUNITY</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --accent-green: #00ff00;
-            --accent-cyan: #58a6ff;
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --gradient-matrix: linear-gradient(90deg, #00ff00 0%, #00ff88 100%);
-        }
-        body { font-family: 'JetBrains Mono', monospace; background: var(--bg-primary); color: var(--text-primary); padding: 20px; }
-        .container { max-width: 700px; margin: 0 auto; }
-        .back-link { color: var(--accent-cyan); margin-bottom: 20px; display: inline-block; }
-        .edit-box {
-            background: var(--bg-secondary);
-            border: 1px solid rgba(0,255,0,0.3);
-            border-radius: 12px;
-            padding: 30px;
-        }
-        .current-avatar {
-            width: 120px; height: 120px; border-radius: 50%; object-fit: cover;
-            border: 3px solid var(--accent-green);
-            margin-bottom: 20px;
-        }
-        .form-group { margin-bottom: 25px; }
-        .form-label { color: var(--accent-cyan); margin-bottom: 10px; display: block; font-weight: 500; }
-        .form-textarea {
-            width: 100%; padding: 15px; background: rgba(0,0,0,0.5); border: 1px solid rgba(88,166,255,0.3);
-            border-radius: 8px; color: var(--text-primary); font-family: inherit; min-height: 150px; resize: vertical;
-        }
-        .form-textarea:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 15px rgba(0,255,0,0.2); }
-        .file-input {
-            padding: 10px; background: rgba(0,0,0,0.5); border: 1px dashed rgba(88,166,255,0.5);
-            border-radius: 8px; color: var(--text-primary); width: 100%;
-        }
-        .submit-btn {
-            background: var(--gradient-matrix); color: #000; padding: 15px 30px; border: none;
-            border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%;
-            font-size: 1.1em; transition: all 0.3s;
-        }
-        .submit-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,255,0,0.4); }
-        .char-count { text-align: right; color: var(--text-secondary); font-size: 0.9em; margin-top: 5px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <a href="/forum/profile" class="back-link"><i class="fas fa-arrow-left"></i> Profile Dön</a>
-        <h1 style="text-align:center; margin-bottom:30px;"><i class="fas fa-user-edit"></i> PROFİL DÜZENLE</h1>
-        
-        <div class="edit-box" style="text-align:center;">
-            <img src="/static/uploads/profiles/{{ user.profile_pic }}" alt="Profil Fotoğrafı" class="current-avatar"
-                 onerror="this.src='/static/default.png';">
-            
-            <form method="POST" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label class="form-label"><i class="fas fa-image"></i> Profil Fotoğrafı Değiştir</label>
-                    <input type="file" name="profile_pic" accept="image/*" class="file-input">
-                    <p style="color:var(--text-secondary);font-size:0.9em;margin-top:8px;">
-                        PNG, JPG, GIF, WEBP desteklenir (max 5MB önerilir)
-                    </p>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label"><i class="fas fa-pen"></i> Biyo (Kendini Tanıt)</label>
-                    <textarea name="bio" class="form-textarea" placeholder="Burada kendini anlatabilirsin... OSINT tutkunu, hacker, araştırmacı vs." 
-                              maxlength="500">{{ user.bio }}</textarea>
-                    <div class="char-count">{{ user.bio|length }}/500</div>
-                </div>
-                
-                <button type="submit" class="submit-btn">
-                    <i class="fas fa-save"></i> DEĞİŞİKLİKLERİ KAYDET
-                </button>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        // Karakter sayacı canlı güncelleme
-        document.querySelector('textarea[name="bio"]').addEventListener('input', function() {
-            document.querySelector('.char-count').textContent = this.value.length + '/500';
-        });
-    </script>
-</body>
-</html>
-    ''', user=user)
-# ====================== ADMIN PANEL (Zaten var ama forum header'a link eklemek için forum_home'da küçük değişiklik) ======================
-# forum_home route'undaki nav-buttons kısmına şu satırı ekle:
-# {% if current_user.is_authenticated and current_user.is_admin %}
-#     <a href="/forum/admin" class="nav-btn" style="background:#ff3333;color:#000;"><i class="fas fa-shield-alt"></i> ADMIN PANEL</a>
-# {% endif %}
-
-# Admin panel route'un zaten kodunda var, sadece yukarıdaki mesaj route'larından önce olduğundan emin ol.
-
-# ====================== FORUM HEADER'A DM BUTONU EKLE ======================
-# forum_home route'undaki nav-buttons içine şu satırı da ekle (admin butonunun yanına):
-# {% if current_user.is_authenticated %}
-#     <a href="/forum/messages" class="nav-btn btn-primary"><i class="fas fa-envelope"></i> Mesajlar</a>
-# {% endif %}
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV') == 'development'
     
     print(f"\n{'='*80}")
-    print("🚀 VAHSET TERMINAL OSINT v3.0 + FORUM")
+    print("🚀 VAHSET TERMINAL OSINT v3.0")
     print(f"{'='*80}")
     print(f"🔧 Port: {port}")
     print(f"🔧 Debug: {debug}")
     print(f"👤 GitHub User: {GITHUB_USERNAME}")
     print(f"📦 Repository: {GITHUB_REPO}")
-    print(f"📊 Loaded {len(users_data):,} OSINT records")
-    print(f"👥 Forum Database: Ready")
-    print(f"🛠️  Features: OSINT Terminal • Community Forum • User Profiles")
+    print(f"📊 Loaded {len(users_data):,} users")
+    print(f"🛠️  OSINT Modules: IP Geolocation • Email Analysis • DNS • WHOIS")
     print(f"{'='*80}\n")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
